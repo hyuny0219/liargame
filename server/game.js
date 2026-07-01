@@ -1,0 +1,544 @@
+'use strict';
+
+const { pickRound } = require('./words');
+
+// 단계별 제한 시간 (초) — 설명/토론 시간은 방 설정을 따름
+const TIMES = { role: 7, vote: 45, revote: 30, guess: 45, judge: 30 };
+const LIAR_GRACE_MS = 45 * 1000; // 라이어 연결 끊김 시 복귀 대기 시간
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function normalize(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, '');
+}
+
+/**
+ * 방 하나의 게임 상태 머신.
+ * ctx: { emitRoom, emitPlayer, broadcastRoom, systemMsg, endGame }
+ * 역할/제시어는 emitPlayer로 개별 전송하며, publicState()에는 절대 포함하지 않는다.
+ */
+function createGame(room, ctx) {
+  const g = {
+    round: 0,
+    totalRounds: room.settings.rounds,
+    mode: room.settings.mode,
+    phase: null, // role | describe | discuss | vote | guess | judge | result | final
+    phaseEndsAt: null,
+    category: null,
+    word: null,
+    fakeWord: null,
+    liarId: null,
+    spyId: null,
+    roles: {}, // playerId -> 개인 전송용 역할 정보
+    names: {}, // playerId -> nickname (라운드 시작 시점 스냅샷, 퇴장자 표시용)
+    order: [],
+    turnIndex: 0,
+    describes: [], // { playerId, text, skipped }
+    votes: {}, // voterId -> targetId
+    revoted: false,
+    tieCandidates: null,
+    accusedId: null,
+    guessText: null,
+    judgeId: null,
+    result: null,
+  };
+  let timer = null;
+  let liarGraceTimer = null;
+  let ended = false;
+
+  function nickname(id) {
+    const p = room.players.get(id);
+    return p ? p.nickname : (g.names[id] || '???');
+  }
+
+  function isActive(id) {
+    const p = room.players.get(id);
+    return !!(p && p.connected);
+  }
+
+  function activeIds() {
+    return [...room.players.values()].filter((p) => p.connected).map((p) => p.id);
+  }
+
+  function setTimer(seconds, fn) {
+    clearTimer();
+    g.phaseEndsAt = Date.now() + seconds * 1000;
+    timer = setTimeout(() => {
+      timer = null;
+      fn();
+    }, seconds * 1000);
+  }
+
+  function clearTimer() {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    g.phaseEndsAt = null;
+  }
+
+  function clearLiarGrace() {
+    if (liarGraceTimer) {
+      clearTimeout(liarGraceTimer);
+      liarGraceTimer = null;
+    }
+  }
+
+  function inRound() {
+    return g.phase && g.phase !== 'result' && g.phase !== 'final';
+  }
+
+  // ---------- 라운드 진행 ----------
+
+  function start() {
+    startRound();
+  }
+
+  function startRound() {
+    const ids = activeIds();
+    if (ids.length < 3) {
+      abort('인원이 부족하여 게임을 종료합니다.');
+      return;
+    }
+    g.round++;
+    g.order = shuffle(ids);
+    g.turnIndex = 0;
+    g.describes = [];
+    g.votes = {};
+    g.revoted = false;
+    g.tieCandidates = null;
+    g.accusedId = null;
+    g.guessText = null;
+    g.judgeId = null;
+    g.result = null;
+    clearLiarGrace();
+
+    g.names = {};
+    for (const id of ids) g.names[id] = nickname(id);
+
+    const picked = pickRound(room.settings.categories);
+    g.category = picked.category;
+    g.word = picked.word;
+    g.fakeWord = g.mode === 'fool' ? picked.fakeWord : null;
+
+    const casting = shuffle(ids);
+    g.liarId = casting[0];
+    g.spyId = g.mode === 'spy' && ids.length >= 5 ? casting[1] : null;
+
+    g.roles = {};
+    for (const id of ids) {
+      if (id === g.liarId) {
+        // 바보 모드: 라이어 본인도 시민인 줄 알고 다른 제시어를 받는다
+        g.roles[id] = g.mode === 'fool'
+          ? { role: 'citizen', category: g.category, word: g.fakeWord }
+          : { role: 'liar', category: g.category, word: null };
+      } else if (id === g.spyId) {
+        g.roles[id] = { role: 'spy', category: g.category, word: g.word, liarName: nickname(g.liarId) };
+      } else {
+        g.roles[id] = { role: 'citizen', category: g.category, word: g.word };
+      }
+    }
+
+    g.phase = 'role';
+    for (const [id, role] of Object.entries(g.roles)) ctx.emitPlayer(id, 'game:role', role);
+    ctx.systemMsg(`라운드 ${g.round}/${g.totalRounds} 시작! 역할을 확인하세요.`);
+    setTimer(TIMES.role, beginDescribe);
+    ctx.broadcastRoom();
+  }
+
+  function beginDescribe() {
+    g.phase = 'describe';
+    g.turnIndex = -1;
+    ctx.systemMsg('설명 단계입니다. 자기 차례에 제시어를 한 문장으로 설명하세요.');
+    advanceTurn();
+  }
+
+  function advanceTurn() {
+    g.turnIndex++;
+    while (g.turnIndex < g.order.length && !isActive(g.order[g.turnIndex])) {
+      g.describes.push({ playerId: g.order[g.turnIndex], text: null, skipped: true });
+      g.turnIndex++;
+    }
+    if (g.turnIndex >= g.order.length) {
+      beginDiscuss();
+      return;
+    }
+    setTimer(room.settings.describeTime, () => {
+      const cur = g.order[g.turnIndex];
+      g.describes.push({ playerId: cur, text: null, skipped: true });
+      ctx.systemMsg(`${nickname(cur)}님이 시간을 초과하여 차례를 넘깁니다.`);
+      advanceTurn();
+    });
+    ctx.broadcastRoom();
+  }
+
+  function beginDiscuss() {
+    g.phase = 'discuss';
+    ctx.systemMsg('토론 시간입니다. 누가 라이어인지 자유롭게 이야기해보세요!');
+    setTimer(room.settings.discussTime, beginVote);
+    ctx.broadcastRoom();
+  }
+
+  function beginVote() {
+    g.phase = 'vote';
+    g.votes = {};
+    ctx.systemMsg('투표 시간! 라이어라고 생각하는 사람에게 투표하세요.');
+    setTimer(TIMES.vote, tally);
+    ctx.broadcastRoom();
+  }
+
+  function tally() {
+    clearTimer();
+    const counts = {};
+    for (const t of Object.values(g.votes)) counts[t] = (counts[t] || 0) + 1;
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) {
+      ctx.systemMsg('아무도 투표하지 않아 라이어가 생존했습니다.');
+      finishRound('liarSurvived');
+      return;
+    }
+    const top = entries[0][1];
+    const topIds = entries.filter(([, c]) => c === top).map(([id]) => id);
+    if (topIds.length > 1) {
+      if (!g.revoted) {
+        g.revoted = true;
+        g.tieCandidates = topIds;
+        g.votes = {};
+        g.phase = 'vote';
+        ctx.systemMsg('동표가 나왔습니다! 최다 득표자들만 대상으로 재투표합니다.');
+        setTimer(TIMES.revote, tally);
+        ctx.broadcastRoom();
+        return;
+      }
+      ctx.systemMsg('재투표도 동표! 라이어가 생존했습니다.');
+      finishRound('liarSurvived');
+      return;
+    }
+    g.accusedId = topIds[0];
+    if (g.accusedId === g.liarId) {
+      beginGuess();
+    } else if (g.spyId && g.accusedId === g.spyId) {
+      finishRound('spyCaught');
+    } else {
+      finishRound('liarSurvived');
+    }
+  }
+
+  function beginGuess() {
+    g.phase = 'guess';
+    ctx.systemMsg(`${nickname(g.accusedId)}님이 라이어로 지목되었습니다! 라이어는 제시어를 맞히면 역전승합니다.`);
+    setTimer(TIMES.guess, () => finishRound('liarCaught'));
+    ctx.broadcastRoom();
+  }
+
+  function pickJudge() {
+    const host = room.players.get(room.hostId);
+    if (room.hostId !== g.liarId && host && host.connected) return room.hostId;
+    return g.order.find((id) => id !== g.liarId && isActive(id)) || null;
+  }
+
+  function beginJudge() {
+    g.judgeId = pickJudge();
+    if (!g.judgeId) {
+      finishRound('liarCaught');
+      return;
+    }
+    g.phase = 'judge';
+    setTimer(TIMES.judge, () => finishRound('liarCaught'));
+    sendJudgePrompt();
+    ctx.systemMsg(`라이어의 답이 정답과 정확히 일치하지 않습니다. ${nickname(g.judgeId)}님이 정답 여부를 판정합니다.`);
+    ctx.broadcastRoom();
+  }
+
+  function sendJudgePrompt() {
+    ctx.emitPlayer(g.judgeId, 'game:judgePrompt', { guess: g.guessText, word: g.word });
+  }
+
+  // ---------- 라운드 종료/점수 ----------
+
+  function finishRound(outcome) {
+    clearTimer();
+    clearLiarGrace();
+    const deltas = {};
+    const liarWin = outcome === 'liarSurvived' || outcome === 'liarGuessed';
+    if (liarWin) {
+      deltas[g.liarId] = outcome === 'liarSurvived' ? 3 : 2;
+      if (g.spyId) deltas[g.spyId] = 2;
+    } else {
+      // 시민 승리: 시민 전원 +1, 정답 대상에게 투표한 시민은 추가 +1
+      const target = outcome === 'spyCaught' ? g.spyId : g.liarId;
+      for (const id of g.order) {
+        if (id === g.liarId || id === g.spyId) continue;
+        if (!room.players.has(id)) continue;
+        deltas[id] = 1 + (g.votes[id] === target ? 1 : 0);
+      }
+    }
+    for (const [id, d] of Object.entries(deltas)) {
+      const p = room.players.get(id);
+      if (p) p.score += d;
+    }
+    g.result = {
+      outcome,
+      voided: false,
+      liarId: g.liarId,
+      liarName: nickname(g.liarId),
+      spyId: g.spyId,
+      spyName: g.spyId ? nickname(g.spyId) : null,
+      category: g.category,
+      word: g.word,
+      fakeWord: g.fakeWord,
+      accusedId: g.accusedId,
+      accusedName: g.accusedId ? nickname(g.accusedId) : null,
+      guessText: g.guessText,
+      votes: { ...g.votes },
+      deltas,
+    };
+    g.phase = 'result';
+    ctx.broadcastRoom();
+  }
+
+  function voidRound(reason) {
+    clearTimer();
+    clearLiarGrace();
+    g.result = {
+      outcome: 'voided',
+      voided: true,
+      reason,
+      liarId: g.liarId,
+      liarName: nickname(g.liarId),
+      spyId: g.spyId,
+      spyName: g.spyId ? nickname(g.spyId) : null,
+      category: g.category,
+      word: g.word,
+      fakeWord: g.fakeWord,
+      accusedId: null,
+      accusedName: null,
+      guessText: null,
+      votes: {},
+      deltas: {},
+    };
+    g.phase = 'result';
+    ctx.systemMsg(reason);
+    ctx.broadcastRoom();
+  }
+
+  function abort(msg) {
+    ctx.systemMsg(msg);
+    destroy();
+    ctx.endGame();
+  }
+
+  // ---------- 플레이어 입력 핸들러 ----------
+
+  function handleChat(playerId, text) {
+    if (g.phase === 'describe') {
+      if (g.order[g.turnIndex] !== playerId) {
+        return { ok: false, error: '설명 단계에서는 자신의 차례에만 발언할 수 있습니다.' };
+      }
+      g.describes.push({ playerId, text, skipped: false });
+      ctx.emitRoom('chat', { kind: 'describe', playerId, nickname: nickname(playerId), text });
+      advanceTurn();
+      return { ok: true };
+    }
+    if ((g.phase === 'guess' || g.phase === 'judge') && playerId === g.liarId) {
+      return { ok: false, error: '지금은 채팅할 수 없습니다. 제시어 입력창을 이용하세요.' };
+    }
+    ctx.emitRoom('chat', { kind: 'chat', playerId, nickname: nickname(playerId), text });
+    return { ok: true };
+  }
+
+  function handleVote(playerId, targetId) {
+    if (g.phase !== 'vote') return { ok: false, error: '지금은 투표 시간이 아닙니다.' };
+    if (!g.order.includes(playerId)) return { ok: false, error: '이번 라운드에는 참여할 수 없습니다.' };
+    if (playerId === targetId) return { ok: false, error: '자기 자신에게는 투표할 수 없습니다.' };
+    if (!g.order.includes(targetId) || !room.players.has(targetId)) {
+      return { ok: false, error: '유효하지 않은 대상입니다.' };
+    }
+    if (g.tieCandidates && !g.tieCandidates.includes(targetId)) {
+      return { ok: false, error: '재투표 후보에게만 투표할 수 있습니다.' };
+    }
+    g.votes[playerId] = targetId;
+    const required = g.order.filter(isActive);
+    const done = required.length > 0 && required.every((id) => g.votes[id]);
+    ctx.broadcastRoom();
+    if (done) tally();
+    return { ok: true };
+  }
+
+  function handleGuess(playerId, text) {
+    if (g.phase !== 'guess' || playerId !== g.liarId) {
+      return { ok: false, error: '지금 제시어를 입력할 수 없습니다.' };
+    }
+    const t = String(text || '').trim().slice(0, 30);
+    if (!t) return { ok: false, error: '제시어를 입력해주세요.' };
+    g.guessText = t;
+    if (normalize(t) === normalize(g.word)) {
+      ctx.systemMsg('라이어가 제시어를 맞혔습니다!');
+      finishRound('liarGuessed');
+      return { ok: true };
+    }
+    beginJudge();
+    return { ok: true };
+  }
+
+  function handleJudge(playerId, correct) {
+    if (g.phase !== 'judge' || playerId !== g.judgeId) {
+      return { ok: false, error: '판정 권한이 없습니다.' };
+    }
+    finishRound(correct ? 'liarGuessed' : 'liarCaught');
+    return { ok: true };
+  }
+
+  function handleNext(playerId) {
+    if (playerId !== room.hostId) return { ok: false, error: '방장만 진행할 수 있습니다.' };
+    if (g.phase === 'result') {
+      if (g.round >= g.totalRounds) {
+        g.phase = 'final';
+        clearTimer();
+        ctx.systemMsg('모든 라운드가 끝났습니다! 최종 결과를 확인하세요.');
+        ctx.broadcastRoom();
+      } else {
+        startRound();
+      }
+      return { ok: true };
+    }
+    if (g.phase === 'final') {
+      destroy();
+      ctx.endGame();
+      return { ok: true };
+    }
+    return { ok: false, error: '지금은 진행할 수 없습니다.' };
+  }
+
+  // ---------- 접속 변동 처리 ----------
+
+  function handleDisconnect(playerId) {
+    if (!inRound()) {
+      ctx.broadcastRoom();
+      return;
+    }
+    if (playerId === g.liarId) {
+      clearLiarGrace();
+      liarGraceTimer = setTimeout(() => {
+        liarGraceTimer = null;
+        const p = room.players.get(g.liarId);
+        if ((!p || !p.connected) && inRound()) {
+          voidRound('라이어의 연결이 끊겨 이번 라운드는 무효 처리됩니다.');
+        }
+      }, LIAR_GRACE_MS);
+    }
+    if (g.phase === 'describe' && g.order[g.turnIndex] === playerId) {
+      clearTimer();
+      g.describes.push({ playerId, text: null, skipped: true });
+      advanceTurn();
+      return;
+    }
+    if (g.phase === 'vote') {
+      const required = g.order.filter(isActive);
+      if (required.length > 0 && required.every((id) => g.votes[id])) {
+        tally();
+        return;
+      }
+    }
+    if (g.phase === 'judge' && playerId === g.judgeId) {
+      beginJudge();
+      return;
+    }
+    ctx.broadcastRoom();
+  }
+
+  function handleReconnect(playerId) {
+    if (playerId === g.liarId) clearLiarGrace();
+    const role = g.roles[playerId];
+    if (role) ctx.emitPlayer(playerId, 'game:role', role);
+    if (g.phase === 'judge' && playerId === g.judgeId) sendJudgePrompt();
+    ctx.broadcastRoom();
+  }
+
+  // 명시적 퇴장(방에서 제거된 뒤 호출됨)
+  function handleLeave(playerId) {
+    if (ended || g.phase === 'final') {
+      ctx.broadcastRoom();
+      return;
+    }
+    if (playerId === g.liarId && inRound()) {
+      voidRound('라이어가 방을 나가 이번 라운드는 무효 처리됩니다.');
+    } else if (g.phase === 'describe' && g.order[g.turnIndex] === playerId) {
+      clearTimer();
+      g.describes.push({ playerId, text: null, skipped: true });
+      advanceTurn();
+    } else if (g.phase === 'vote') {
+      delete g.votes[playerId];
+      for (const [voter, target] of Object.entries(g.votes)) {
+        if (target === playerId) delete g.votes[voter];
+      }
+      const required = g.order.filter(isActive);
+      if (required.length > 0 && required.every((id) => g.votes[id])) tally();
+    } else if (g.phase === 'judge' && playerId === g.judgeId) {
+      beginJudge();
+    }
+    if (activeIds().length < 3 && inRound()) {
+      abort('인원이 부족하여 게임을 종료합니다.');
+      return;
+    }
+    ctx.broadcastRoom();
+  }
+
+  // ---------- 공개 상태 ----------
+
+  function publicState() {
+    return {
+      round: g.round,
+      totalRounds: g.totalRounds,
+      mode: g.mode,
+      phase: g.phase,
+      phaseEndsAt: g.phaseEndsAt,
+      category: g.category,
+      names: { ...g.names },
+      order: g.order.slice(),
+      turnIndex: g.turnIndex,
+      describes: g.describes.map((d) => ({
+        playerId: d.playerId,
+        nickname: nickname(d.playerId),
+        text: d.text,
+        skipped: !!d.skipped,
+      })),
+      votedIds: Object.keys(g.votes),
+      tieCandidates: g.tieCandidates,
+      accusedId: g.accusedId,
+      accusedName: g.accusedId ? nickname(g.accusedId) : null,
+      judgeId: g.judgeId,
+      guessText: g.phase === 'judge' ? g.guessText : null,
+      result: g.phase === 'result' || g.phase === 'final' ? g.result : null,
+    };
+  }
+
+  function destroy() {
+    ended = true;
+    clearTimer();
+    clearLiarGrace();
+  }
+
+  return {
+    start,
+    handleChat,
+    handleVote,
+    handleGuess,
+    handleJudge,
+    handleNext,
+    handleDisconnect,
+    handleReconnect,
+    handleLeave,
+    publicState,
+    destroy,
+  };
+}
+
+module.exports = { createGame };

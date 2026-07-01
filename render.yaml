@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: liargame
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: SITE_CODE
+        value: "1234" # 배포 후 Render 대시보드에서 원하는 접속코드로 변경하세요

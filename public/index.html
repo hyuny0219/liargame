@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🎭 라이어게임</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="toast"></div>
+
+  <!-- 로그인 화면 -->
+  <section id="screen-login" class="screen center hidden">
+    <div class="card login-card">
+      <h1 class="logo">🎭 라이어게임</h1>
+      <p class="sub">접속코드와 닉네임을 입력하고 입장하세요</p>
+      <input id="login-code" type="password" placeholder="접속코드" autocomplete="off">
+      <input id="login-nick" type="text" maxlength="12" placeholder="닉네임 (최대 12자)" autocomplete="off">
+      <button id="login-btn" class="btn primary block">입장하기</button>
+      <p id="login-error" class="error-text"></p>
+    </div>
+  </section>
+
+  <!-- 로비 화면 -->
+  <section id="screen-lobby" class="screen hidden">
+    <header class="topbar">
+      <h2>🎭 라이어게임 로비</h2>
+      <div class="topbar-right">
+        <span id="lobby-nick" class="nick-chip"></span>
+        <button id="logout-btn" class="btn ghost small">로그아웃</button>
+      </div>
+    </header>
+    <div class="lobby-grid">
+      <div class="card panel">
+        <h3>➕ 방 만들기</h3>
+        <form id="create-form">
+          <label>방 이름</label>
+          <input id="create-name" type="text" maxlength="20" placeholder="방 이름 (비우면 자동)">
+          <label>공개 여부</label>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="create-public" value="1" checked> 공개방 (목록에 표시)</label>
+            <label class="radio"><input type="radio" name="create-public" value="0"> 비공개방 (코드로만 입장)</label>
+          </div>
+          <div class="settings-fields"></div>
+          <button type="submit" class="btn primary block">방 만들기</button>
+        </form>
+      </div>
+      <div class="lobby-right">
+        <div class="card panel">
+          <h3>🔑 방 코드로 입장</h3>
+          <div class="row">
+            <input id="join-code" type="text" maxlength="6" placeholder="6자리 방 코드" style="text-transform:uppercase">
+            <button id="join-code-btn" class="btn primary">입장</button>
+          </div>
+        </div>
+        <div class="card panel">
+          <h3>🌐 공개방 목록</h3>
+          <div id="room-list" class="room-list"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 게임방 화면 -->
+  <section id="screen-room" class="screen hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h2 id="room-title"></h2>
+        <button id="room-code-chip" class="code-chip" title="클릭하여 코드 복사"></button>
+      </div>
+      <button id="leave-btn" class="btn ghost small">방 나가기</button>
+    </header>
+    <div class="room-grid">
+      <div class="room-main">
+        <div id="game-area" class="card panel"></div>
+        <div class="card panel chat-panel">
+          <div id="chat-log" class="chat-log"></div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" type="text" maxlength="200" placeholder="메시지 입력..." autocomplete="off">
+            <button type="submit" class="btn primary">전송</button>
+          </form>
+        </div>
+      </div>
+      <aside class="room-side">
+        <div id="players-panel" class="card panel"></div>
+      </aside>
+    </div>
+  </section>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/main.js"></script>
+  <script src="/js/lobby.js"></script>
+  <script src="/js/game.js"></script>
+</body>
+</html>
