@@ -118,6 +118,34 @@ setInterval(() => {
   el.classList.toggle('low', remain <= 10);
 }, 250);
 
+// ---------- 모바일 가상 키보드 대응 ----------
+// 키보드가 올라와도 포커스된 입력창이 가려지지 않게 화면을 조정한다
+
+function setupMobileKeyboard() {
+  const isNarrow = () => window.matchMedia('(max-width: 860px)').matches;
+
+  document.addEventListener('focusin', (e) => {
+    if (!isNarrow()) return;
+    const el = e.target;
+    if (el.tagName === 'INPUT' || el.tagName === 'SELECT') {
+      // 키보드 애니메이션이 끝난 뒤 입력창을 화면 중앙으로
+      setTimeout(() => el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 300);
+    }
+  });
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      if (!isNarrow()) return;
+      const el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT')) {
+        el.scrollIntoView({ block: 'center' });
+      }
+      const log = $('#chat-log');
+      if (log) log.scrollTop = log.scrollHeight;
+    });
+  }
+}
+
 // ---------- 소켓 ----------
 
 function doAuth(payload, cb) {
@@ -263,6 +291,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupLogin();
   setupLobby();
   setupRoomControls();
+  setupMobileKeyboard();
   initSocket();
 
   // 저장된 세션으로 자동 로그인 시도

@@ -25,10 +25,18 @@ body {
 
 .hidden { display: none !important; }
 
-.screen { max-width: 1100px; margin: 0 auto; padding: 16px; }
+/* 노치/안전영역(safe-area) 대응: viewport-fit=cover와 함께 사용 */
+.screen {
+  max-width: 1100px; margin: 0 auto;
+  padding: calc(16px + env(safe-area-inset-top, 0px))
+           calc(16px + env(safe-area-inset-right, 0px))
+           calc(16px + env(safe-area-inset-bottom, 0px))
+           calc(16px + env(safe-area-inset-left, 0px));
+}
 .screen.center {
   display: flex; align-items: center; justify-content: center;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .card {
@@ -73,7 +81,7 @@ label { font-size: 13px; color: var(--muted); }
 .error-text { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; }
 
 #toast {
-  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  position: fixed; top: calc(16px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%);
   background: var(--danger); color: #fff; padding: 10px 20px;
   border-radius: 8px; font-size: 14px; z-index: 100;
   opacity: 0; pointer-events: none; transition: opacity .25s;
