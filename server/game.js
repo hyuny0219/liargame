@@ -5,6 +5,7 @@ const { pickRound } = require('./words');
 // 단계별 제한 시간 (초) — 설명/토론 시간은 방 설정을 따름
 const TIMES = { role: 7, vote: 45, revote: 30, guess: 45, judge: 30 };
 const LIAR_GRACE_MS = 45 * 1000; // 라이어 연결 끊김 시 복귀 대기 시간
+const LOW_PLAYER_GRACE_MS = 45 * 1000; // 접속 인원이 3인 미만이 됐을 때 복귀 대기 시간
 
 function shuffle(arr) {
   const a = arr.slice();
@@ -51,6 +52,7 @@ function createGame(room, ctx) {
   };
   let timer = null;
   let liarGraceTimer = null;
+  let lowPlayerTimer = null;
   let ended = false;
 
   function nickname(id) {
@@ -91,6 +93,13 @@ function createGame(room, ctx) {
     }
   }
 
+  function clearLowPlayerGrace() {
+    if (lowPlayerTimer) {
+      clearTimeout(lowPlayerTimer);
+      lowPlayerTimer = null;
+    }
+  }
+
   function inRound() {
     return g.phase && g.phase !== 'result' && g.phase !== 'final';
   }
@@ -119,6 +128,7 @@ function createGame(room, ctx) {
     g.judgeId = null;
     g.result = null;
     clearLiarGrace();
+    clearLowPlayerGrace();
 
     g.names = {};
     for (const id of ids) g.names[id] = nickname(id);
@@ -424,6 +434,16 @@ function createGame(room, ctx) {
       ctx.broadcastRoom();
       return;
     }
+    // 접속 인원이 3인 미만이 되면 복귀 유예 후에도 부족할 때 게임 종료
+    if (activeIds().length < 3) {
+      clearLowPlayerGrace();
+      lowPlayerTimer = setTimeout(() => {
+        lowPlayerTimer = null;
+        if (inRound() && activeIds().length < 3) {
+          abort('접속 인원이 부족하여 게임을 종료합니다.');
+        }
+      }, LOW_PLAYER_GRACE_MS);
+    }
     if (playerId === g.liarId) {
       clearLiarGrace();
       liarGraceTimer = setTimeout(() => {
@@ -456,6 +476,7 @@ function createGame(room, ctx) {
 
   function handleReconnect(playerId) {
     if (playerId === g.liarId) clearLiarGrace();
+    if (activeIds().length >= 3) clearLowPlayerGrace();
     const role = g.roles[playerId];
     if (role) ctx.emitPlayer(playerId, 'game:role', role);
     if (g.phase === 'judge' && playerId === g.judgeId) sendJudgePrompt();
@@ -524,6 +545,7 @@ function createGame(room, ctx) {
     ended = true;
     clearTimer();
     clearLiarGrace();
+    clearLowPlayerGrace();
   }
 
   return {

@@ -167,6 +167,12 @@ async function main() {
   const bad = await emitP(bots[0].socket, 'auth', { code: '틀린코드', nickname: 'x' });
   assert(bad.ok === false, '잘못된 접속코드는 거부됨');
 
+  // 미인증 소켓은 로비 목록도 볼 수 없어야 한다
+  const anon = io(URL);
+  const anonList = await emitP(anon, 'lobby:list', null);
+  assert(anonList.ok === false, '미인증 소켓의 lobby:list는 거부됨');
+  anon.close();
+
   // 방 생성(비공개) 및 입장
   const created = await emitP(bots[0].socket, 'room:create', {
     name: '테스트방',

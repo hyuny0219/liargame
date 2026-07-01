@@ -216,6 +216,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('lobby:list', (data, cb) => {
+    if (!socket.data.session) return cbOf(cb)({ ok: false, error: '로그인이 필요합니다.' });
     cbOf(cb)({ ok: true, rooms: roomsMod.publicRoomList() });
   });
 
