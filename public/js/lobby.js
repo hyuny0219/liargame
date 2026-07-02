@@ -59,7 +59,10 @@ function readSettingsFields(idPrefix) {
     describeTime: Number($(`#${p}-desctime`).value),
     discussTime: Number($(`#${p}-disctime`).value),
     categories: [...document.querySelectorAll(`input[name="${p}-cat"]:checked`)].map((el) => el.value),
-    customWords: $(`#${p}-custom`).value.split(/[,\n]/).map((w) => w.trim()).filter(Boolean),
+    // 서버 sanitize와 동일한 규칙(공백 정리·20자 절단·중복 제거)으로 정규화해 검증 불일치 방지
+    customWords: [...new Set(
+      $(`#${p}-custom`).value.split(/[,\n]/).map((w) => w.trim().slice(0, 20)).filter(Boolean)
+    )].slice(0, 100),
   };
 }
 

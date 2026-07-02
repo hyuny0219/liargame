@@ -69,6 +69,8 @@ function createRoom({ name, isPublic, settings, hostId }) {
     game: null,
     history: [], // 최근 채팅/시스템 메시지 (입장·재접속 시 복원용)
     banned: new Set(), // 강퇴된 playerId
+    bannedNames: new Set(), // 강퇴된 닉네임 (재로그인 우회 방지)
+    bannedIps: new Set(), // 강퇴된 IP (재로그인 우회 방지)
     emptyTimer: null,
     createdAt: Date.now(),
   };

@@ -21,9 +21,12 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const INDEX_HTML = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
 
 // OG 태그의 __ORIGIN__을 실제 배포 주소로 치환해 링크 미리보기가 동작하게 한다
-app.get('/', (req, res) => {
-  const origin = `${req.protocol}://${req.get('host')}`;
-  res.type('html').send(INDEX_HTML.replace(/__ORIGIN__/g, origin));
+app.get(['/', '/index.html'], (req, res) => {
+  // Host 헤더는 안전한 문자만 허용 (HTML 주입 방지), 치환값은 함수로 전달해 $ 패턴 해석 차단
+  const host = String(req.get('host') || '').replace(/[^a-zA-Z0-9.\-:[\]]/g, '');
+  const proto = req.protocol === 'https' ? 'https' : 'http';
+  const origin = host ? `${proto}://${host}` : '';
+  res.type('html').send(INDEX_HTML.replace(/__ORIGIN__/g, () => origin));
 });
 app.use(express.static(PUBLIC_DIR, { index: false }));
 app.get('/healthz', (req, res) => res.send('ok'));
@@ -149,6 +152,7 @@ function gameCtx(room) {
       if (result.voided) return;
       const liarWin = result.outcome === 'liarSurvived' || result.outcome === 'liarGuessed';
       for (const pid of result.participants || []) {
+        if (!room.players.has(pid)) continue; // 라운드 중 이탈자는 점수 규칙과 동일하게 제외
         const s = sessionsByPlayer.get(pid);
         if (!s || !s.stats) continue;
         s.stats.rounds++;
@@ -210,7 +214,16 @@ function scheduleWaitingRemoval(room, player) {
   }, WAITING_DISCONNECT_MS);
 }
 
-function removePlayer(room, playerId) {
+// 방장 위임 대상 선택: 게임 중이면 라운드 참가자 우선, 그다음 접속자 순
+function pickNextHost(room) {
+  const players = [...room.players.values()];
+  const order = room.game ? room.game.publicState().order : [];
+  return players.find((p) => p.connected && order.includes(p.id))
+    || players.find((p) => p.connected)
+    || players[0];
+}
+
+function removePlayer(room, playerId, opts) {
   const player = room.players.get(playerId);
   if (!player) return;
   if (player.disconnectTimer) {
@@ -225,9 +238,9 @@ function removePlayer(room, playerId) {
     destroyRoom(room);
     return;
   }
-  systemMsg(room, `${player.nickname}님이 나갔습니다.`);
+  if (!opts || !opts.silent) systemMsg(room, `${player.nickname}님이 나갔습니다.`);
   if (room.hostId === playerId) {
-    const next = [...room.players.values()].find((p) => p.connected) || [...room.players.values()][0];
+    const next = pickNextHost(room);
     room.hostId = next.id;
     systemMsg(room, `${next.nickname}님이 새 방장이 되었습니다.`);
   }
@@ -369,7 +382,9 @@ io.on('connection', (socket) => {
     if (cur) return cb({ ok: false, error: '이미 방에 참여 중입니다.' });
     const room = roomsMod.getRoom((data && data.code) || '');
     if (!room) return cb({ ok: false, error: '존재하지 않는 방 코드입니다.' });
-    if (room.banned.has(sess.playerId)) return cb({ ok: false, error: '이 방에서 강퇴되어 다시 입장할 수 없습니다.' });
+    if (room.banned.has(sess.playerId) || room.bannedNames.has(sess.nickname) || room.bannedIps.has(clientIp(socket))) {
+      return cb({ ok: false, error: '이 방에서 강퇴되어 다시 입장할 수 없습니다.' });
+    }
     // 게임 중에도 입장 허용(관전) — 현재 라운드는 구경만 하고 다음 라운드부터 참여
     if (room.players.size >= room.settings.maxPlayers) return cb({ ok: false, error: '방이 가득 찼습니다.' });
     const dup = [...room.players.values()].some((p) => p.nickname === sess.nickname);
@@ -413,15 +428,17 @@ io.on('connection', (socket) => {
     const target = room.players.get(targetId);
     if (!target) return cb({ ok: false, error: '대상을 찾을 수 없습니다.' });
     room.banned.add(targetId);
+    room.bannedNames.add(target.nickname);
     const targetSocket = playerSockets.get(targetId);
     if (targetSocket) {
+      room.bannedIps.add(clientIp(targetSocket));
       targetSocket.leave(roomChannel(room.code));
       targetSocket.emit('room:kicked');
       targetSocket.join('lobby');
       targetSocket.emit('lobby:rooms', roomsMod.publicRoomList());
     }
     systemMsg(room, `${target.nickname}님이 강퇴되었습니다.`);
-    removePlayer(room, targetId);
+    removePlayer(room, targetId, { silent: true });
     cb({ ok: true });
   });
 
@@ -515,8 +532,8 @@ io.on('connection', (socket) => {
     systemMsg(room, `${p.nickname}님의 연결이 끊겼습니다.`);
 
     if (room.hostId === sess.playerId) {
-      const next = [...room.players.values()].find((q) => q.connected);
-      if (next) {
+      const next = pickNextHost(room);
+      if (next && next.connected) {
         room.hostId = next.id;
         systemMsg(room, `${next.nickname}님이 새 방장이 되었습니다.`);
       }

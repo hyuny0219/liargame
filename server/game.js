@@ -105,6 +105,22 @@ function createGame(room, ctx) {
     return g.phase && g.phase !== 'result' && g.phase !== 'final';
   }
 
+  // 이번 라운드 참가자(관전자 제외) 중 접속 중인 인원
+  function activeParticipantCount() {
+    return g.order.filter(isActive).length;
+  }
+
+  // 라운드 참가자가 3인 미만이면 라운드 무효(관전자 포함 인원이 충분하면 게임은 유지) 또는 게임 종료
+  function endRoundIfShortHanded() {
+    if (!inRound() || activeParticipantCount() >= 3) return false;
+    if (activeIds().length >= 3) {
+      voidRound('참가 인원이 부족하여 이번 라운드는 무효 처리됩니다.');
+    } else {
+      abort('인원이 부족하여 게임을 종료합니다.');
+    }
+    return true;
+  }
+
   // ---------- 라운드 진행 ----------
 
   function start() {
@@ -252,8 +268,10 @@ function createGame(room, ctx) {
   }
 
   function pickJudge() {
-    const host = room.players.get(room.hostId);
-    if (room.hostId !== g.liarId && host && host.connected) return room.hostId;
+    // 판정자는 이번 라운드 참가자 중에서만 선택 (관전자 방장에게 제시어가 새지 않게)
+    if (room.hostId !== g.liarId && g.order.includes(room.hostId) && isActive(room.hostId)) {
+      return room.hostId;
+    }
     return g.order.find((id) => id !== g.liarId && isActive(id)) || null;
   }
 
@@ -464,14 +482,12 @@ function createGame(room, ctx) {
       ctx.broadcastRoom();
       return;
     }
-    // 접속 인원이 3인 미만이 되면 복귀 유예 후에도 부족할 때 게임 종료
-    if (activeIds().length < 3) {
+    // 라운드 참가자가 3인 미만이 되면 복귀 유예 후에도 부족할 때 라운드 무효/게임 종료
+    if (activeParticipantCount() < 3) {
       clearLowPlayerGrace();
       lowPlayerTimer = setTimeout(() => {
         lowPlayerTimer = null;
-        if (inRound() && activeIds().length < 3) {
-          abort('접속 인원이 부족하여 게임을 종료합니다.');
-        }
+        endRoundIfShortHanded();
       }, LOW_PLAYER_GRACE_MS);
     }
     if (playerId === g.liarId) {
@@ -504,7 +520,7 @@ function createGame(room, ctx) {
 
   function handleReconnect(playerId) {
     if (playerId === g.liarId) clearLiarGrace();
-    if (activeIds().length >= 3) clearLowPlayerGrace();
+    if (activeParticipantCount() >= 3) clearLowPlayerGrace();
     // 이번 라운드 역할이 없으면 null을 보내 클라이언트의 이전 역할 카드를 지운다
     ctx.emitPlayer(playerId, 'game:role', g.roles[playerId] || null);
     if (g.phase === 'judge' && playerId === g.judgeId) sendJudgePrompt();
@@ -533,10 +549,7 @@ function createGame(room, ctx) {
     } else if (g.phase === 'judge' && playerId === g.judgeId) {
       reassignJudge();
     }
-    if (activeIds().length < 3 && inRound()) {
-      abort('인원이 부족하여 게임을 종료합니다.');
-      return;
-    }
+    if (endRoundIfShortHanded()) return;
     ctx.broadcastRoom();
   }
 
