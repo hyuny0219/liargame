@@ -3,12 +3,12 @@
 // ---------- 게임방 렌더링 ----------
 
 const PHASE_TITLES = {
-  role: '🎭 역할 확인',
-  describe: '💬 설명 단계',
-  discuss: '🗣️ 토론 단계',
-  vote: '🗳️ 투표 단계',
-  guess: '🤔 라이어의 최종 추리',
-  judge: '⚖️ 정답 판정',
+  role: '🎭 역할 확인!',
+  describe: '💬 설명 시간!',
+  discuss: '🗣️ 토론 시간!',
+  vote: '🗳️ 투표!',
+  guess: '😈 최종 추리!',
+  judge: '⚖️ 정답 판정!',
   result: '📋 라운드 결과',
   final: '🏆 최종 결과',
 };
@@ -25,7 +25,8 @@ function renderRoom() {
   const room = App.room;
   if (!room) return;
   $('#room-title').textContent = (room.isPublic ? '🌐 ' : '🔒 ') + room.name;
-  $('#room-code-chip').textContent = '코드: ' + room.code + ' 📋';
+  $('#room-code-chip').textContent = 'CODE: ' + room.code + ' 📋';
+  $('#players-count').textContent = room.players.length;
   renderPlayers();
   const area = $('#game-area');
   if (room.state === 'waiting') renderWaiting(area);
@@ -33,26 +34,36 @@ function renderRoom() {
   updateChatInput();
 }
 
+// ---------- 점수판 (드로어/사이드 패널) ----------
+
 function renderPlayers() {
   const room = App.room;
   const panel = $('#players-panel');
   const game = room.game;
   const votedSet = new Set(game && game.phase === 'vote' ? game.votedIds : []);
   const iAmHost = room.hostId === App.me.playerId;
-  let html = `<h3>👥 참가자 (${room.players.length}/${room.settings.maxPlayers})</h3>`;
   const sorted = [...room.players].sort((a, b) => b.score - a.score);
-  for (const p of sorted) {
+  const medals = ['🥇', '🥈', '🥉'];
+  let html = '';
+  let lastScore = null;
+  let lastRank = 0;
+  sorted.forEach((p, i) => {
+    const rank = p.score === lastScore ? lastRank : i + 1;
+    lastScore = p.score;
+    lastRank = rank;
     const isMe = p.id === App.me.playerId;
+    const showRank = room.state === 'playing' || sorted.some((q) => q.score > 0);
     html += `
       <div class="player-row">
-        <span class="dot ${p.connected ? '' : 'off'}"></span>
-        <span class="pname ${isMe ? 'me' : ''}">${escapeHtml(p.nickname)}${isMe ? ' (나)' : ''}</span>
-        ${room.hostId === p.id ? '<span class="crown" title="방장">👑</span>' : ''}
+        <span class="rankchip">${showRank ? (medals[rank - 1] || rank) : '·'}</span>
+        ${avatarHtml(p.id)}
+        <span class="pname ${isMe ? 'me' : ''}">${escapeHtml(p.nickname)}${isMe ? ' (나)' : ''}
+          ${room.hostId === p.id ? ' 👑' : ''}${p.connected ? '' : ' <span class="off">(연결 끊김)</span>'}</span>
         ${votedSet.has(p.id) ? '<span class="voted-mark" title="투표 완료">✔</span>' : ''}
-        ${room.state === 'playing' || p.score > 0 ? `<span class="score">${p.score}점</span>` : ''}
+        <span class="score">⭐ ${p.score}</span>
         ${iAmHost && !isMe ? `<button class="kick-btn" data-kick="${p.id}" data-kick-name="${escapeHtml(p.nickname)}" title="강퇴">✕</button>` : ''}
       </div>`;
-  }
+  });
   panel.innerHTML = html;
 
   panel.querySelectorAll('[data-kick]').forEach((btn) => {
@@ -75,26 +86,30 @@ function renderWaiting(area) {
 
   let html = `
     <div class="waiting-head">
-      <div class="big">게임 대기 중</div>
-      <div class="desc">${room.isPublic ? '공개방' : '비공개방'} · 친구에게 방 코드 <b style="color:var(--accent)">${room.code}</b>를 공유하세요</div>
-      <button id="invite-btn" class="btn ghost small" style="margin-top:8px">🔗 초대 링크 공유</button>
+      <div class="big">🎈 파티 대기 중</div>
+      <div class="desc">${room.isPublic ? '공개방' : '비공개방'} · 친구에게 코드 <b>${room.code}</b>를 공유하세요</div>
+      <button id="invite-btn" class="btn3d small yellow" style="margin-top:12px">🔗 초대 링크 공유</button>
     </div>
-    <div class="settings-view">
-      <div class="sv-item"><span class="sv-label">모드</span>${MODE_LABELS[s.mode]}</div>
-      <div class="sv-item"><span class="sv-label">라운드</span>${s.rounds}라운드</div>
-      <div class="sv-item"><span class="sv-label">발언/토론 시간</span>${s.describeTime}초 / ${s.discussTime}초</div>
-      <div class="sv-item"><span class="sv-label">카테고리</span>${s.categories.map(escapeHtml).join(', ')}</div>
+    <div class="settings-chips">
+      <span class="badge">${MODE_ICONS[s.mode]} ${MODE_LABELS[s.mode]} 모드</span>
+      <span class="badge">${s.rounds}라운드</span>
+      <span class="badge">발언 ${s.describeTime}초</span>
+      <span class="badge">토론 ${s.discussTime}초</span>
+      <span class="badge">최대 ${s.maxPlayers}명</span>
+      <span class="badge">카테고리 ${s.categories.length}개</span>
     </div>`;
 
   if (isHost) {
     html += `
-      <div class="host-actions">
-        <button id="start-btn" class="btn primary block">🚀 게임 시작 (${connectedCount}명 접속 중)</button>
-        <button id="edit-settings-btn" class="btn ghost small">⚙️ 게임 설정 변경</button>
-        <div id="settings-editor" class="settings-form-wrap hidden"></div>
+      <button id="start-btn" class="btn3d block" style="font-size:19px;padding:16px">🚀 게임 시작! (${connectedCount}명 접속 중)</button>
+      <div class="card panel" style="margin-top:14px;padding:14px 18px">
+        <details class="advanced" style="border:none;padding:0;margin:0">
+          <summary>⚙️ 게임 설정 변경</summary>
+          <div id="settings-editor"></div>
+        </details>
       </div>`;
   } else {
-    html += `<div class="big-msg">방장이 게임을 시작할 때까지 기다려주세요 ⏳</div>`;
+    html += `<div class="big-msg">방장이 게임을 시작할 때까지 기다려주세요 ⏳<br><span class="em">채팅으로 인사를 나눠보세요!</span></div>`;
   }
   area.innerHTML = html;
 
@@ -116,20 +131,17 @@ function renderWaiting(area) {
         if (res && !res.ok) showToast(res.error || '시작할 수 없습니다.');
       });
     });
-    $('#edit-settings-btn').addEventListener('click', () => {
-      const wrap = $('#settings-editor');
-      if (!wrap.classList.contains('hidden')) { wrap.classList.add('hidden'); return; }
-      wrap.classList.remove('hidden');
-      wrap.innerHTML = settingsFieldsHtml(room.settings, 'edit') +
-        '<button id="save-settings-btn" class="btn ok block">설정 저장</button>';
-      $('#save-settings-btn').addEventListener('click', () => {
-        const settings = readSettingsFields('edit');
-        const err = validateSettings(settings);
-        if (err) return showToast(err);
-        App.socket.emit('room:settings', { settings }, (res) => {
-          if (res && res.ok) showToast('설정이 저장되었습니다.', true);
-          else showToast((res && res.error) || '설정 변경에 실패했습니다.');
-        });
+    const editor = $('#settings-editor');
+    editor.innerHTML = settingsFieldsHtml(room.settings, 'edit') +
+      '<button id="save-settings-btn" class="btn3d small mint block">설정 저장</button>';
+    bindModeDesc('edit');
+    $('#save-settings-btn').addEventListener('click', () => {
+      const settings = readSettingsFields('edit');
+      const err = validateSettings(settings);
+      if (err) return showToast(err);
+      App.socket.emit('room:settings', { settings }, (res) => {
+        if (res && res.ok) showToast('설정이 저장되었습니다.', true);
+        else showToast((res && res.error) || '설정 변경에 실패했습니다.');
       });
     });
   }
@@ -144,40 +156,41 @@ function renderGame(area) {
   const me = App.me.playerId;
   const isHost = room.hostId === me;
 
-  let html = `
-    <div class="phase-banner">
-      <div>
-        <div class="phase-title">${PHASE_TITLES[game.phase] || ''}</div>
-        <div class="round-info">라운드 ${game.round}/${game.totalRounds} · ${MODE_LABELS[game.mode]} · 카테고리: ${escapeHtml(game.category || '')}</div>
-      </div>
-      <div id="phase-timer" class="timer"></div>
-    </div>`;
-
-  // 관전자(이번 라운드 미참여) 안내
-  if (game.order.length && !game.order.includes(me) && game.phase !== 'final') {
-    html += `<div class="big-msg">🎬 <span class="em">관전 중</span>입니다. 다음 라운드부터 참여할 수 있어요!</div>`;
+  let html = '';
+  if (game.phase !== 'final') {
+    html += `
+      <div class="phase-row">
+        <span class="phase-sticker">${PHASE_TITLES[game.phase] || ''}</span>
+        <span class="badge purple">ROUND ${game.round}/${game.totalRounds}</span>
+        <span class="badge">${escapeHtml(game.category || '')}</span>
+      </div>`;
   }
 
-  // 내 역할 카드 (최종 결과 화면 제외)
-  if (App.myRole && game.phase !== 'final') {
-    html += roleCardHtml(App.myRole);
+  // 관전자(이번 라운드 미참여) 안내
+  const spectating = game.order.length && !game.order.includes(me);
+  if (spectating && game.phase !== 'final') {
+    html += `<div class="big-msg">🎬 <span class="em">관전 중</span>입니다. 다음 라운드부터 참여할 수 있어요!</div>`;
   }
 
   switch (game.phase) {
     case 'role':
-      html += `<div class="big-msg">역할과 제시어를 확인하세요. 곧 설명 단계가 시작됩니다!</div>`;
+      if (App.myRole) html += roleCardHtml(App.myRole, false);
+      html += `<div class="big-msg">역할과 제시어를 확인하세요.<br>곧 <span class="em">설명 단계</span>가 시작됩니다!</div>`;
       break;
     case 'describe':
-      html += orderStripHtml(game) + describeListHtml(game);
+      if (App.myRole) html += roleCardHtml(App.myRole, true);
+      html += orderStripHtml(game);
       break;
     case 'discuss':
-      html += describeListHtml(game) +
-        `<div class="big-msg">채팅으로 자유롭게 토론하세요. 누가 <span class="em">라이어</span>일까요?</div>`;
+      if (App.myRole) html += roleCardHtml(App.myRole, true);
+      html += orderStripHtml(game);
+      html += `<div class="big-msg">채팅으로 자유롭게 토론하세요.<br>누가 <span class="em">라이어</span>일까요? 🤔</div>`;
       if (isHost) {
-        html += `<button id="skip-discuss-btn" class="btn primary block">🗳️ 토론 끝내고 바로 투표하기</button>`;
+        html += `<button id="skip-discuss-btn" class="btn3d block">🗳️ 토론 끝내고 바로 투표하기</button>`;
       }
       break;
     case 'vote':
+      if (App.myRole) html += roleCardHtml(App.myRole, true);
       html += voteHtml(game, me);
       break;
     case 'guess':
@@ -197,160 +210,260 @@ function renderGame(area) {
   bindGameEvents(game, me, isHost);
 }
 
-function roleCardHtml(role) {
-  let body;
-  if (role.role === 'liar') {
-    body = `당신은 <span class="liar-word">라이어</span>입니다! 제시어를 모르는 척하지 말고, 아는 척 설명하세요.`;
+function roleCardHtml(role, mini) {
+  const isLiar = role.role === 'liar';
+  let label;
+  let word;
+  if (isLiar) {
+    label = `내 역할 · ${escapeHtml(role.category)} · 라이어`;
+    word = `<span class="${mini ? 'rm-word' : 'rc-word'} liar">제시어를 모릅니다! 아는 척 연기하세요 😈</span>`;
   } else if (role.role === 'spy') {
-    body = `당신은 <span class="liar-word">스파이</span>입니다. 제시어는 <span class="word">${escapeHtml(role.word)}</span>, 라이어는 <b>${escapeHtml(role.liarName)}</b>님입니다. 몰래 라이어를 도우세요!`;
+    label = `내 역할 · ${escapeHtml(role.category)} · 스파이 (라이어: ${escapeHtml(role.liarName)})`;
+    word = `<span class="${mini ? 'rm-word' : 'rc-word'}">${escapeHtml(role.word)}</span>`;
   } else {
-    body = `당신은 <b>시민</b>입니다. 제시어: <span class="word">${escapeHtml(role.word)}</span>`;
+    label = `내 역할 · ${escapeHtml(role.category)} · 시민`;
+    word = `<span class="${mini ? 'rm-word' : 'rc-word'}">${escapeHtml(role.word)}</span>`;
+  }
+  const emoji = isLiar ? '🃏' : role.role === 'spy' ? '🕵️' : '🙂';
+  if (mini) {
+    return `
+      <div class="role-mini ${isLiar || role.role === 'spy' ? 'liar-card' : ''} ${App.roleHidden ? 'blurred' : ''}" id="role-card">
+        <span class="rm-emoji">${emoji}</span>
+        <div class="rm-body" style="min-width:0">
+          <div class="rm-label">${label}</div>
+          <div>${word}</div>
+        </div>
+        <div class="grow"></div>
+        <button id="role-toggle" class="btn3d small yellow">${App.roleHidden ? '👀 보기' : '👀 가리기'}</button>
+      </div>`;
   }
   return `
-    <div class="role-card ${App.roleHidden ? 'blurred' : ''}" id="role-card">
-      <div class="role-head">
-        <span class="role-label">🃏 내 역할 · 카테고리: ${escapeHtml(role.category)}</span>
-        <button id="role-toggle" class="btn ghost small">${App.roleHidden ? '보기' : '가리기'}</button>
+    <div class="role-card ${isLiar || role.role === 'spy' ? 'liar-card' : ''} ${App.roleHidden ? 'blurred' : ''}" id="role-card">
+      <span class="rc-emoji">${emoji}</span>
+      <div class="rc-body" style="min-width:0;flex:1">
+        <div class="rc-label">${label}</div>
+        <div>${word}</div>
       </div>
-      <div class="role-body">${body}</div>
+      <button id="role-toggle" class="btn3d small yellow">${App.roleHidden ? '👀 보기' : '👀 가리기'}</button>
     </div>`;
 }
 
 function orderStripHtml(game) {
-  let html = '<div class="order-strip">';
+  let html = '<div class="order-row">';
   game.order.forEach((id, i) => {
-    const cls = i < game.turnIndex ? 'done' : i === game.turnIndex ? 'current' : '';
-    html += `<span class="order-chip ${cls}">${i + 1}. ${escapeHtml(playerName(id))}</span>`;
+    const done = game.phase !== 'describe' || i < game.turnIndex;
+    const current = game.phase === 'describe' && i === game.turnIndex;
+    html += `
+      <div class="seat ${done && !current ? 'done' : ''} ${current ? 'current' : ''}">
+        ${current ? '<span class="now-label">지금 설명 중!</span>' : ''}
+        ${avatarHtml(id)}
+        <div class="sname">${escapeHtml(playerName(id))}${id === App.me.playerId ? ' (나)' : ''}${done && !current ? ' ✔' : ''}</div>
+      </div>`;
   });
   return html + '</div>';
 }
 
-function describeListHtml(game) {
-  if (!game.describes.length) return '';
-  let html = '<div class="describe-list">';
-  for (const d of game.describes) {
-    html += `<div class="describe-item"><span class="dname">${escapeHtml(d.nickname)}</span>${
-      d.skipped ? '<span class="skipped">(시간 초과)</span>' : escapeHtml(d.text)
-    }</div>`;
+// 각 플레이어의 마지막 설명 한 줄 (투표 힌트용)
+function lastDescribeOf(game, id) {
+  for (let i = game.describes.length - 1; i >= 0; i--) {
+    const d = game.describes[i];
+    if (d.playerId === id && d.text) return d.text;
   }
-  return html + '</div>';
+  return null;
 }
 
 function voteHtml(game, me) {
   const candidates = game.tieCandidates || game.order;
   const iCanVote = game.order.includes(me);
-  let html = '';
-  if (game.tieCandidates) {
-    html += `<div class="big-msg">⚠️ 동표! <span class="em">재투표</span>입니다. 후보 중에서 선택하세요.</div>`;
-  }
-  html += '<div class="vote-grid">';
+  let html = `
+    <div class="vote-head">
+      <div class="vt">${game.tieCandidates ? '⚠️ 동표! 재투표!' : '🗳️ 라이어를 지목하라!'}</div>
+      <div class="sub">${game.tieCandidates ? '최다 득표자 중에서 다시 선택하세요' : '카드를 눌러 투표 · 마감 전까지 변경 가능'}</div>
+    </div>
+    <div class="vote-grid">`;
   for (const id of candidates) {
     const selected = App.myVote === id;
     const disabled = !iCanVote || id === me;
-    html += `<button class="vote-btn ${selected ? 'selected' : ''}" data-vote="${id}" ${disabled ? 'disabled' : ''}>
-      ${escapeHtml(playerName(id))}${id === me ? ' (나)' : ''}</button>`;
+    const hint = lastDescribeOf(game, id);
+    html += `
+      <button class="vote-btn ${selected ? 'selected' : ''}" data-vote="${id}" ${disabled ? 'disabled' : ''}>
+        ${avatarHtml(id)}
+        <div class="vname">${escapeHtml(playerName(id))}${id === me ? ' (나)' : ''}</div>
+        <div class="vhint">${id === me ? '투표 불가' : hint ? '"' + escapeHtml(hint) + '"' : ''}</div>
+      </button>`;
   }
   html += '</div>';
-  const voterCount = game.order.filter((id) => {
+
+  const required = game.order.filter((id) => {
     const p = App.room.players.find((q) => q.id === id);
     return p && p.connected;
-  }).length;
-  html += `<div class="big-msg">${game.votedIds.length}/${voterCount}명 투표 완료</div>`;
+  });
+  const notVoted = required.filter((id) => !game.votedIds.includes(id)).map((id) => playerName(id));
+  const pct = required.length ? Math.round((game.votedIds.length / required.length) * 100) : 0;
+  html += `
+    <div class="pbar"><div class="fill" style="width:${pct}%"></div></div>
+    <div class="big-msg" style="padding:10px 0 0">${game.votedIds.length}/${required.length}명 투표 완료${
+      notVoted.length ? ' · 기다리는 중: <span class="em">' + notVoted.map(escapeHtml).join(', ') + '</span>' : ''}</div>`;
+  return html;
+}
+
+// 스포트라이트 무대 (지목 발표)
+function spotlightHtml(game, voteCount) {
+  const rays = [...Array(8)].map((_, i) =>
+    `<div class="ray" style="transform:translate(-50%,-100%) rotate(${i * 45}deg)"></div>`).join('');
+  return `
+    <div class="spotlight-stage">
+      <div class="glow"></div>
+      <div class="rays">${rays}</div>
+      ${avatarHtml(game.accusedId)}
+      ${voteCount ? `<span class="vote-count">🎯 ${voteCount}표!</span>` : ''}
+    </div>
+    <div class="spot-title">${escapeHtml(game.accusedName)}님이 지목되었습니다!</div>`;
+}
+
+// 득표 현황 막대
+function tallyHtml(votes, title) {
+  const entries = Object.entries(votes || {});
+  if (!entries.length) return '';
+  const counts = {};
+  for (const t of Object.values(votes)) counts[t] = (counts[t] || 0) + 1;
+  const max = Math.max(...Object.values(counts));
+  const barColors = ['var(--coral)', 'var(--blue)', 'var(--mint)', 'var(--yellow)', 'var(--purple)'];
+  let html = `<div class="card tally-card"><div class="tc-title">${title || '🧾 득표 현황'}</div>`;
+  Object.entries(counts).sort((a, b) => b[1] - a[1]).forEach(([id, c], i) => {
+    html += `
+      <div class="tally-row">
+        <span class="tname">${avatarFor(id).emoji} ${escapeHtml(playerName(id))}</span>
+        <div class="tbar"><div style="width:${Math.round((c / max) * 100)}%;background:${barColors[i % barColors.length]}"></div></div>
+        <span class="tcnt">${c}표</span>
+      </div>`;
+  });
+  const detail = entries.map(([v, t]) => `${escapeHtml(playerName(v))} → ${escapeHtml(playerName(t))}`).join(' · ');
+  html += `<div class="vote-detail">${detail}</div></div>`;
   return html;
 }
 
 function guessHtml(game, me) {
+  const voteCount = game.votesDetail
+    ? Object.values(game.votesDetail).filter((t) => t === game.accusedId).length : 0;
   if (game.accusedId === me) {
+    const hints = game.describes.filter((d) => d.text && d.playerId !== me)
+      .map((d) => `<span>💬 "${escapeHtml(d.text)}"</span>`).join('');
     return `
-      <div class="big-msg">당신이 라이어로 지목되었습니다!<br>제시어를 맞히면 <span class="em">역전승</span>합니다.</div>
-      <div class="guess-box">
-        <input id="guess-input" type="text" maxlength="30" placeholder="제시어를 입력하세요" autocomplete="off">
-        <button id="guess-btn" class="btn primary">제출</button>
+      <div class="vote-head" style="margin-top:6px">
+        <div class="vt" style="background:var(--navy);box-shadow:0 6px 0 var(--navy-deep),0 10px 0 rgba(0,0,0,.35)">😈 마지막 기회!</div>
+        <div class="sub">당신이 지목되었습니다! 제시어를 맞히면 <b style="color:var(--yellow-soft)">역전승 (+2점)</b> 🔥</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="note-msg">카테고리: ${escapeHtml(game.category)} · 다른 사람들의 설명을 떠올려보세요!</div>
+        ${hints ? `<div class="guess-hints">${hints}</div>` : ''}
+        <div class="guess-box">
+          <input id="guess-input" type="text" maxlength="30" placeholder="제시어를 입력하세요..." autocomplete="off">
+        </div>
+        <button id="guess-btn" class="btn3d block">🎯 정답 제출!</button>
       </div>`;
   }
-  return `<div class="big-msg"><span class="em">${escapeHtml(game.accusedName)}</span>님이 라이어로 지목되었습니다!<br>라이어가 제시어를 추리하는 중... 🤔</div>`;
+  return `
+    ${spotlightHtml(game, voteCount)}
+    <div class="big-msg">과연 ${escapeHtml(game.accusedName)}님이 라이어일까요...? 🫣<br>
+      라이어라면 지금 <span class="em">제시어를 추리하는 중</span>입니다!</div>
+    ${tallyHtml(game.votesDetail)}`;
 }
 
 function judgeHtml(game, me) {
   if (game.judgeId === me && App.judgePrompt) {
     return `
-      <div class="judge-box">
-        <div class="pair">라이어의 답: <b>${escapeHtml(App.judgePrompt.guess)}</b> / 정답: <b>${escapeHtml(App.judgePrompt.word)}</b></div>
-        <div style="color:var(--muted);font-size:13px;margin-bottom:12px">사실상 같은 답이면 정답으로 인정해주세요.</div>
+      <div class="card" style="text-align:center">
+        <div class="judge-pair">라이어의 답: <b>${escapeHtml(App.judgePrompt.guess)}</b></div>
+        <div class="judge-pair">정답: <b>${escapeHtml(App.judgePrompt.word)}</b></div>
+        <div class="note-msg">사실상 같은 답이면 정답으로 인정해주세요!</div>
         <div class="judge-actions">
-          <button id="judge-ok" class="btn ok">⭕ 정답 인정</button>
-          <button id="judge-no" class="btn danger">❌ 오답</button>
+          <button id="judge-ok" class="btn3d mint">⭕ 정답 인정</button>
+          <button id="judge-no" class="btn3d">❌ 오답</button>
         </div>
       </div>`;
   }
-  return `<div class="big-msg">라이어의 답: <span class="em">${escapeHtml(game.guessText || '')}</span><br>${escapeHtml(playerName(game.judgeId))}님이 정답 여부를 판정하는 중... ⚖️</div>`;
+  return `
+    ${spotlightHtml(game, null)}
+    <div class="big-msg">라이어의 답: <span class="em">"${escapeHtml(game.guessText || '')}"</span><br>
+      ${escapeHtml(playerName(game.judgeId))}님이 정답 여부를 판정하는 중... ⚖️</div>`;
 }
+
+const OUTCOME_VIEW = {
+  liarSurvived: { emoji: '😈', title: '라이어 승리!', sub: '정체를 끝까지 숨겼습니다', cls: 'liar-win' },
+  liarGuessed: { emoji: '🃏', title: '라이어 역전승!', sub: '제시어까지 맞혀버렸습니다!', cls: 'liar-win' },
+  liarCaught: { emoji: '🎉', title: '시민 승리!', sub: '라이어를 잡았습니다!', cls: 'citizen-win' },
+  spyCaught: { emoji: '🎉', title: '시민 승리!', sub: '스파이를 잡았습니다!', cls: 'citizen-win' },
+  voided: { emoji: '😵', title: '라운드 무효', sub: '', cls: 'voided' },
+};
 
 function resultHtml(game, isHost) {
   const r = game.result;
   if (!r) return '';
-  let outcomeCls = 'voided';
-  let outcomeText = '라운드 무효';
-  if (!r.voided) {
-    const liarWin = r.outcome === 'liarSurvived' || r.outcome === 'liarGuessed';
-    outcomeCls = liarWin ? 'liar-win' : 'citizen-win';
-    outcomeText = {
-      liarSurvived: '😈 라이어 승리! (정체를 숨겼습니다)',
-      liarGuessed: '😈 라이어 역전승! (제시어를 맞혔습니다)',
-      liarCaught: '🎉 시민 승리! (라이어를 잡았습니다)',
-      spyCaught: '🎉 시민 승리! (스파이를 잡았습니다)',
-    }[r.outcome] || '';
-  }
+  const v = OUTCOME_VIEW[r.voided ? 'voided' : r.outcome] || OUTCOME_VIEW.voided;
   let html = `
-    <div class="result-card">
-      <div class="outcome ${outcomeCls}">${outcomeText}</div>
-      ${r.voided ? `<div class="reveal">${escapeHtml(r.reason || '')}</div>` : ''}
-      <div class="reveal">제시어: <b>${escapeHtml(r.word)}</b> (${escapeHtml(r.category)})</div>
-      <div class="reveal">라이어: <b>${escapeHtml(r.liarName)}</b>${r.fakeWord ? ` — 바보 모드 제시어: <b>${escapeHtml(r.fakeWord)}</b>` : ''}</div>
-      ${r.spyName ? `<div class="reveal">스파이: <b>${escapeHtml(r.spyName)}</b></div>` : ''}
-      ${r.guessText ? `<div class="reveal">라이어의 추리: <b>${escapeHtml(r.guessText)}</b></div>` : ''}
-      ${deltaTableHtml(r.deltas)}
-      ${voteDetailHtml(r.votes)}
+    <div class="result-banner ${v.cls}">
+      <div class="rb-emoji">${v.emoji}</div>
+      <div class="rb-title">${v.title}</div>
+      <div class="rb-sub">${r.voided ? escapeHtml(r.reason || '') : v.sub}</div>
+    </div>
+    <div class="card reveal-card">
+      <div class="rv-row">제시어 <span class="word-pill">${escapeHtml(r.word)}</span> <span style="color:var(--muted)">(${escapeHtml(r.category)})</span></div>
+      <div class="rv-row">라이어는 ${avatarHtml(r.liarId, 'sm')} <b>${escapeHtml(r.liarName)}</b>님!${
+        r.fakeWord ? ` <span style="color:var(--muted)">바보 모드 제시어: ${escapeHtml(r.fakeWord)}</span>` : ''}</div>
+      ${r.spyName ? `<div class="rv-row">스파이는 ${avatarHtml(r.spyId, 'sm')} <b>${escapeHtml(r.spyName)}</b>님!</div>` : ''}
+      ${r.guessText ? `<div class="rv-row">라이어의 추리: <b>"${escapeHtml(r.guessText)}"</b></div>` : ''}
     </div>`;
-  html += isHost
-    ? `<button id="next-btn" class="btn primary block">${game.round >= game.totalRounds ? '🏆 최종 결과 보기' : '▶️ 다음 라운드'}</button>`
-    : `<div class="big-msg">방장이 진행할 때까지 기다려주세요...</div>`;
-  return html;
-}
-
-function deltaTableHtml(deltas) {
-  const entries = Object.entries(deltas || {});
-  if (!entries.length) return '';
-  let html = '<table class="delta-table">';
-  for (const [id, d] of entries.sort((a, b) => b[1] - a[1])) {
-    html += `<tr><td>${escapeHtml(playerName(id))}</td><td class="plus">+${d}점</td></tr>`;
+  const deltas = Object.entries(r.deltas || {});
+  if (deltas.length) {
+    html += '<div class="card delta-list">';
+    deltas.sort((a, b) => b[1] - a[1]).forEach(([id, d]) => {
+      html += `
+        <div class="delta-row">
+          ${avatarHtml(id, 'sm')}
+          <span class="dname">${escapeHtml(playerName(id))}</span>
+          <span class="dplus">+${d}점 ⭐</span>
+        </div>`;
+    });
+    html += '</div>';
   }
-  return html + '</table>';
-}
-
-function voteDetailHtml(votes) {
-  const entries = Object.entries(votes || {});
-  if (!entries.length) return '';
-  const parts = entries.map(([v, t]) => `${escapeHtml(playerName(v))} → ${escapeHtml(playerName(t))}`);
-  return `<div class="vote-detail">투표: ${parts.join(' · ')}</div>`;
+  html += tallyHtml(r.votes);
+  html += isHost
+    ? `<button id="next-btn" class="btn3d block" style="font-size:18px">${game.round >= game.totalRounds ? '🏆 최종 결과 보기' : '▶️ 다음 라운드!'}</button>`
+    : `<div class="big-msg">방장이 진행할 때까지 잠시만요... ⏳</div>`;
+  return html;
 }
 
 function finalHtml(room, isHost) {
   const sorted = [...room.players].sort((a, b) => b.score - a.score);
+  const [first, second, third] = sorted;
+  let html = `
+    <div class="vote-head" style="margin-top:8px">
+      <div class="vt" style="background:var(--yellow);color:var(--navy);text-shadow:none;box-shadow:0 6px 0 var(--yellow-dark),0 10px 0 rgba(43,35,80,.5)">🏆 최종 결과!</div>
+    </div>
+    <div class="podium">`;
+  const pd = (p, cls, medal) => p ? `
+    <div class="pd ${cls}">
+      ${avatarHtml(p.id)}
+      <div class="pd-name">${escapeHtml(p.nickname)}</div>
+      <div class="pd-block">${medal}</div>
+    </div>` : '';
+  html += pd(second, 'second', '🥈') + pd(first, 'first', '🥇') + pd(third, 'third', '🥉');
+  html += '</div><div class="card rank-list">';
   const medals = ['🥇', '🥈', '🥉'];
-  let html = '<div class="rank-list">';
   sorted.forEach((p, i) => {
     html += `
-      <div class="rank-item">
-        <span class="medal">${medals[i] || (i + 1) + '위'}</span>
-        <span class="rname">${escapeHtml(p.nickname)}${p.id === App.me.playerId ? ' (나)' : ''}</span>
-        <span class="rscore">${p.score}점</span>
+      <div class="rank-row">
+        <span class="rr-rank">${medals[i] || (i + 1) + '위'}</span>
+        ${avatarHtml(p.id, 'sm')}
+        <span class="rr-name">${escapeHtml(p.nickname)}${p.id === App.me.playerId ? ' (나)' : ''}</span>
+        <span class="rr-score">⭐ ${p.score}점</span>
       </div>`;
   });
   html += '</div>';
   html += isHost
-    ? '<button id="next-btn" class="btn primary block">🏠 대기실로 돌아가기</button>'
-    : '<div class="big-msg">수고하셨습니다! 방장이 대기실로 이동할 때까지 기다려주세요.</div>';
+    ? '<button id="next-btn" class="btn3d mint block">🏠 대기실로 돌아가기</button>'
+    : '<div class="big-msg">수고하셨습니다! 🎉<br>방장이 대기실로 이동할 때까지 기다려주세요.</div>';
   return html;
 }
 
@@ -362,7 +475,7 @@ function bindGameEvents(game, me, isHost) {
     roleToggle.addEventListener('click', () => {
       App.roleHidden = !App.roleHidden;
       $('#role-card').classList.toggle('blurred', App.roleHidden);
-      roleToggle.textContent = App.roleHidden ? '보기' : '가리기';
+      roleToggle.textContent = App.roleHidden ? '👀 보기' : '👀 가리기';
     });
   }
 
@@ -371,11 +484,22 @@ function bindGameEvents(game, me, isHost) {
       const targetId = btn.dataset.vote;
       const voteRound = App.room.game ? App.room.game.voteRound : 0;
       App.socket.emit('game:vote', { targetId, voteRound }, (res) => {
-        if (res && res.ok) App.myVote = targetId;
-        else if (res && res.error) showToast(res.error);
+        if (res && res.ok) {
+          App.myVote = targetId;
+          if (navigator.vibrate) navigator.vibrate(60);
+        } else if (res && res.error) showToast(res.error);
       });
     });
   });
+
+  const skipBtn = $('#skip-discuss-btn');
+  if (skipBtn) {
+    skipBtn.addEventListener('click', () => {
+      App.socket.emit('game:skipDiscuss', null, (res) => {
+        if (res && !res.ok && res.error) showToast(res.error);
+      });
+    });
+  }
 
   const guessBtn = $('#guess-btn');
   if (guessBtn) {
@@ -395,15 +519,6 @@ function bindGameEvents(game, me, isHost) {
   if (judgeOk) {
     judgeOk.addEventListener('click', () => App.socket.emit('game:judge', { correct: true }, () => {}));
     $('#judge-no').addEventListener('click', () => App.socket.emit('game:judge', { correct: false }, () => {}));
-  }
-
-  const skipBtn = $('#skip-discuss-btn');
-  if (skipBtn) {
-    skipBtn.addEventListener('click', () => {
-      App.socket.emit('game:skipDiscuss', null, (res) => {
-        if (res && !res.ok && res.error) showToast(res.error);
-      });
-    });
   }
 
   const nextBtn = $('#next-btn');

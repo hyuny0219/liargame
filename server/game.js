@@ -577,6 +577,8 @@ function createGame(room, ctx) {
       tieCandidates: g.tieCandidates,
       accusedId: g.accusedId,
       accusedName: g.accusedId ? nickname(g.accusedId) : null,
+      // 지목 확정 후에는 개표 연출을 위해 투표 상세를 공개
+      votesDetail: g.accusedId ? { ...g.votes } : null,
       judgeId: g.judgeId,
       guessText: g.phase === 'judge' ? g.guessText : null,
       result: g.phase === 'result' || g.phase === 'final' ? g.result : null,

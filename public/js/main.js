@@ -10,6 +10,7 @@ const App = {
   myVote: null,
   roleHidden: false,
   categories: [],    // /api/meta에서 로드
+  stats: null,
   authed: false,
 };
 
@@ -35,14 +36,125 @@ function showScreen(name) {
   }
 }
 
+// ---------- 아바타 (playerId 해시 → 동물+색 조합, 모든 클라이언트 동일) ----------
+
+const AVATAR_EMOJIS = ['🦊', '🐻', '🐥', '🐸', '👻', '🐼', '🐰', '🦁', '🐯', '🐨', '🐷', '🐙', '🐹', '🐶', '🐱', '🦄'];
+const AVATAR_COLORS = ['#FF5E7E', '#4D96FF', '#FFC93C', '#3DDC97', '#8C52FF', '#FF9F45', '#2EC4B6', '#E85D9E'];
+
+function avatarFor(id) {
+  let h = 0;
+  const s = String(id || '');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return {
+    emoji: AVATAR_EMOJIS[h % AVATAR_EMOJIS.length],
+    color: AVATAR_COLORS[(h >>> 4) % AVATAR_COLORS.length],
+  };
+}
+
+function avatarHtml(id, cls) {
+  const a = avatarFor(id);
+  return `<span class="avatar ${cls || ''}" style="background:${a.color}">${a.emoji}</span>`;
+}
+
+// ---------- 효과음 (WebAudio 합성음, 외부 파일 없음) ----------
+
+const Sound = {
+  muted: localStorage.getItem('liar_muted') === '1',
+  ctx: null,
+  ensure() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) this.ctx = new AC();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  tone(freq, delay, dur, vol) {
+    const t = this.ctx.currentTime + delay;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol || 0.07, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur);
+  },
+  play(name) {
+    if (this.muted) return;
+    this.ensure();
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    if (name === 'turn') { this.tone(880, 0, 0.15); this.tone(1174.66, 0.18, 0.3); }
+    else if (name === 'vote') { this.tone(659.25, 0, 0.12); this.tone(659.25, 0.16, 0.12); }
+    else if (name === 'result') { this.tone(523.25, 0, 0.14); this.tone(659.25, 0.13, 0.14); this.tone(783.99, 0.26, 0.32); }
+    else if (name === 'tick') { this.tone(1318.5, 0, 0.06, 0.045); }
+    else if (name === 'phase') { this.tone(783.99, 0, 0.12); this.tone(987.77, 0.14, 0.22); }
+  },
+  toggle() {
+    this.muted = !this.muted;
+    localStorage.setItem('liar_muted', this.muted ? '1' : '0');
+    return this.muted;
+  },
+};
+
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---------- 단계 전환 오버레이 / 컨페티 ----------
+
+const PHASE_OVERLAYS = {
+  role: { emoji: '🎭', title: '역할 확인!', sub: '내 제시어를 확인하세요. 라이어는 누구?' },
+  describe: { emoji: '💬', title: '설명 시작!', sub: '자기 차례에 제시어를 한 문장으로!' },
+  discuss: { emoji: '🗣️', title: '토론 시간!', sub: '누가 라이어인지 자유롭게 이야기해요' },
+  vote: { emoji: '🗳️', title: '투표 시작!', sub: '토론 끝! 이제 라이어를 지목할 시간 🔥' },
+  guess: { emoji: '😈', title: '라이어의 최종 추리!', sub: '제시어를 맞히면 역전승!' },
+  final: { emoji: '🏆', title: '최종 결과!', sub: '오늘의 라이어게임 챔피언은?' },
+};
+
+function showPhaseOverlay(phase) {
+  const cfg = PHASE_OVERLAYS[phase];
+  if (!cfg || reducedMotion()) return;
+  const el = $('#phase-overlay');
+  el.querySelector('.po-emoji').textContent = cfg.emoji;
+  el.querySelector('.po-title').textContent = cfg.title;
+  el.querySelector('.po-sub').textContent = cfg.sub;
+  el.classList.remove('hidden');
+  void el.offsetWidth; // 애니메이션 재시작
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.add('hidden'), 1700);
+  Sound.play('phase');
+}
+
+function burstConfetti(count) {
+  if (reducedMotion()) return;
+  const layer = $('#confetti-layer');
+  const colors = ['#FFC93C', '#3DDC97', '#FF5E7E', '#4D96FF', '#fff', '#8C52FF'];
+  for (let i = 0; i < (count || 60); i++) {
+    const p = document.createElement('div');
+    p.className = 'party-confetti';
+    p.style.left = Math.random() * 100 + 'vw';
+    p.style.background = colors[Math.floor(Math.random() * colors.length)];
+    p.style.animationDuration = 2.2 + Math.random() * 1.8 + 's';
+    p.style.animationDelay = Math.random() * 0.6 + 's';
+    p.style.width = 8 + Math.random() * 8 + 'px';
+    layer.appendChild(p);
+    setTimeout(() => p.remove(), 4800);
+  }
+}
+
 // ---------- 화면 전환 ----------
+
+// 서버-클라이언트 시계 오차 보정 (상태 수신 시점에만 계산)
+function syncClock(state) {
+  if (state && state.serverNow) App._clockOffset = state.serverNow - Date.now();
+}
 
 function enterLobby() {
   App.room = null;
   App.myRole = null;
   App.judgePrompt = null;
   App.myVote = null;
-  $('#lobby-nick').textContent = '👤 ' + App.me.nickname;
+  closeDrawer();
+  $('#lobby-nick').textContent = '😎 ' + App.me.nickname;
   showScreen('lobby');
   renderRoomList(App._lastRooms || []);
   renderMyStats();
@@ -68,15 +180,10 @@ function renderMyStats() {
   }
   const rate = Math.round((s.wins / s.rounds) * 100);
   const liar = s.liarRounds
-    ? ` · 라이어 ${s.liarRounds}회 중 <b>${s.liarWins}승</b>`
+    ? ` · 라이어로 ${s.liarRounds}판 중 <b>${s.liarWins}번</b> 속임 성공! 😈`
     : '';
-  el.innerHTML = `${s.rounds}라운드 <b>${s.wins}승</b> (승률 ${rate}%)${liar}
-    <br><span style="font-size:11px">서버가 재시작되면 초기화됩니다</span>`;
-}
-
-// 서버-클라이언트 시계 오차 보정 (상태 수신 시점에만 계산)
-function syncClock(state) {
-  if (state && state.serverNow) App._clockOffset = state.serverNow - Date.now();
+  el.innerHTML = `${s.rounds}라운드 <b>${s.wins}승</b> · 승률 ${rate}%${liar}
+    <br><span class="small">서버가 재시작되면 초기화됩니다</span>`;
 }
 
 function enterRoom(roomState, chatHistory) {
@@ -86,6 +193,17 @@ function enterRoom(roomState, chatHistory) {
   (chatHistory || []).forEach(appendChat); // 서버가 보관한 최근 대화 복원
   showScreen('room');
   renderRoom();
+}
+
+// ---------- 점수판 드로어 ----------
+
+function openDrawer() {
+  $('#players-drawer').classList.remove('hidden');
+  $('#drawer-dim').classList.remove('hidden');
+}
+function closeDrawer() {
+  $('#players-drawer').classList.add('hidden');
+  $('#drawer-dim').classList.add('hidden');
 }
 
 // ---------- 채팅 ----------
@@ -99,13 +217,18 @@ function appendChat(msg) {
   } else {
     div.className = 'chat-msg ' + (msg.kind === 'describe' ? 'describe' : '');
     if (msg.playerId === App.me.playerId) div.classList.add('mine');
+    div.innerHTML = avatarHtml(msg.playerId, 'sm');
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
     const name = document.createElement('span');
     name.className = 'cname';
-    name.textContent = (msg.kind === 'describe' ? '💬 ' : '') + msg.nickname;
+    name.textContent = (msg.kind === 'describe' ? '💬 ' : '') + msg.nickname
+      + (msg.kind === 'describe' ? '의 설명' : '');
     const body = document.createElement('span');
     body.textContent = msg.text;
-    div.appendChild(name);
-    div.appendChild(body);
+    bubble.appendChild(name);
+    bubble.appendChild(body);
+    div.appendChild(bubble);
   }
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
@@ -161,57 +284,32 @@ function updateChatInput() {
   maybeTurnAlert();
 }
 
-// ---------- 타이머 ----------
+// ---------- 타이머 링 ----------
 
 setInterval(() => {
   const game = App.room && App.room.game;
+  const ring = $('#timer-ring');
   const el = $('#phase-timer');
-  if (!el) return;
-  if (!game || !game.phaseEndsAt) { el.textContent = ''; return; }
+  if (!ring || !el) return;
+  if (!game || !game.phaseEndsAt || !App._phaseDur) {
+    el.textContent = '';
+    ring.classList.add('hidden');
+    return;
+  }
+  ring.classList.remove('hidden');
   const now = Date.now() + (App._clockOffset || 0);
-  const remain = Math.max(0, Math.ceil((game.phaseEndsAt - now) / 1000));
-  el.textContent = remain + '초';
-  el.classList.toggle('low', remain <= 10);
+  const remainMs = Math.max(0, game.phaseEndsAt - now);
+  const remain = Math.ceil(remainMs / 1000);
+  const pct = Math.min(100, Math.max(0, (remainMs / App._phaseDur) * 100));
+  const low = remain <= 10;
+  ring.classList.toggle('low', low);
+  const color = low ? 'var(--coral)' : 'var(--mint)';
+  ring.style.background = `conic-gradient(${color} 0 ${pct}%, var(--line-soft) ${pct}% 100%)`;
+  if (el.textContent !== String(remain)) {
+    el.textContent = remain;
+    if (low && remain > 0) Sound.play('tick');
+  }
 }, 250);
-
-// ---------- 효과음 (WebAudio 합성음, 외부 파일 없음) ----------
-
-const Sound = {
-  muted: localStorage.getItem('liar_muted') === '1',
-  ctx: null,
-  ensure() {
-    if (!this.ctx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (AC) this.ctx = new AC();
-    }
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
-  },
-  tone(freq, delay, dur, vol) {
-    const t = this.ctx.currentTime + delay;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(vol || 0.07, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    osc.connect(gain).connect(this.ctx.destination);
-    osc.start(t);
-    osc.stop(t + dur);
-  },
-  play(name) {
-    if (this.muted) return;
-    this.ensure();
-    if (!this.ctx || this.ctx.state !== 'running') return;
-    if (name === 'turn') { this.tone(880, 0, 0.15); this.tone(1174.66, 0.18, 0.3); }
-    else if (name === 'vote') { this.tone(659.25, 0, 0.12); this.tone(659.25, 0.16, 0.12); }
-    else if (name === 'result') { this.tone(523.25, 0, 0.14); this.tone(659.25, 0.13, 0.14); this.tone(783.99, 0.26, 0.32); }
-  },
-  toggle() {
-    this.muted = !this.muted;
-    localStorage.setItem('liar_muted', this.muted ? '1' : '0');
-    return this.muted;
-  },
-};
 
 // ---------- 모바일 가상 키보드 대응 ----------
 // 키보드가 올라와도 포커스된 입력창이 가려지지 않게 화면을 조정한다
@@ -285,6 +383,7 @@ function initSocket() {
   App.socket.on('room:state', (state) => {
     if (!App.room) return;
     const prevPhase = App.room.game ? App.room.game.phase : null;
+    const prevEndsAt = App.room.game ? App.room.game.phaseEndsAt : null;
     App.room = state;
     syncClock(state);
     const phase = state.game ? state.game.phase : null;
@@ -292,15 +391,28 @@ function initSocket() {
       App.myVote = null; // 단계가 바뀌면 투표 선택 초기화 (재투표 대비)
       if (phase === 'role') { App.judgePrompt = null; App._lastTurnKey = null; }
       if (!phase) { App.myRole = null; App.judgePrompt = null; App._lastTurnKey = null; }
+      showPhaseOverlay(phase);
+      if (phase === 'result') {
+        Sound.play('result');
+        const r = state.game.result;
+        if (r && !r.voided) {
+          const liarWin = r.outcome === 'liarSurvived' || r.outcome === 'liarGuessed';
+          if (!liarWin) burstConfetti(70);
+        }
+      }
+      if (phase === 'final') burstConfetti(110);
+      if (phase === 'vote') Sound.play('vote');
     }
+    // 타이머 진행률 계산용: 단계 시간이 갱신되면 전체 길이 기록
+    const endsAt = state.game ? state.game.phaseEndsAt : null;
+    if (endsAt && endsAt !== prevEndsAt) {
+      App._phaseDur = Math.max(1000, endsAt - (Date.now() + (App._clockOffset || 0)));
+    }
+    if (!endsAt) App._phaseDur = null;
     // 서버 투표 목록에 내가 없으면 선택 표시 초기화 (재투표 시작 시 votes가 비워짐)
     const g = state.game;
     if (g && g.phase === 'vote' && App.myVote && !g.votedIds.includes(App.me.playerId)) {
       App.myVote = null;
-    }
-    if (phase !== prevPhase) {
-      if (phase === 'vote') Sound.play('vote');
-      else if (phase === 'result') Sound.play('result');
     }
     renderRoom();
   });
@@ -325,11 +437,7 @@ function initSocket() {
 
   App.socket.on('room:closed', () => {
     showToast('방이 닫혔습니다.', true);
-    App.socket.emit('lobby:list', null, (res) => {
-      if (res && res.ok) App._lastRooms = res.rooms;
-      enterLobby();
-      renderRoomList(App._lastRooms || []);
-    });
+    enterLobby();
   });
 
   App.socket.on('room:kicked', () => {
@@ -379,6 +487,10 @@ function setupRoomControls() {
   // 첫 사용자 조작 시 오디오 컨텍스트 활성화 (브라우저 자동재생 정책 대응)
   document.addEventListener('click', () => Sound.ensure(), { once: true });
 
+  $('#players-btn').addEventListener('click', openDrawer);
+  $('#drawer-close').addEventListener('click', closeDrawer);
+  $('#drawer-dim').addEventListener('click', closeDrawer);
+
   $('#leave-btn').addEventListener('click', () => {
     if (App.room && App.room.state === 'playing' && !confirm('게임이 진행 중입니다. 정말 나가시겠습니까?')) return;
     App.socket.emit('room:leave', null, () => enterLobby());
@@ -415,7 +527,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     App._pendingRoom = invited;
     history.replaceState(null, '', location.pathname); // 새로고침 시 재입장 시도 방지
     document.querySelector('#screen-login .sub').textContent =
-      `초대받은 방(${invited})으로 바로 입장합니다`;
+      `초대받은 방(${invited})으로 바로 입장합니다 ✨`;
   }
   try {
     const meta = await fetch('/api/meta').then((r) => r.json());
