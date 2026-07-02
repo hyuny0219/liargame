@@ -28,6 +28,50 @@ const playerSockets = new Map(); // playerId -> socket
 
 const WAITING_DISCONNECT_MS = 60 * 1000; // 대기실에서 연결 끊긴 플레이어 제거 유예
 const EMPTY_ROOM_MS = 5 * 60 * 1000; // 전원 연결 끊긴 방 삭제 유예
+const AUTH_MAX_FAILS = 10; // IP당 접속코드 실패 허용 횟수
+const AUTH_FAIL_WINDOW_MS = 15 * 60 * 1000; // 실패 횟수 초기화 주기
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 미사용 세션 보관 기간
+
+// 접속코드 무차별 대입 방지: IP별 실패 횟수 제한
+const authFails = new Map(); // ip -> { count, resetAt }
+
+function clientIp(socket) {
+  const fwd = String(socket.handshake.headers['x-forwarded-for'] || '');
+  return fwd.split(',')[0].trim() || socket.handshake.address || 'unknown';
+}
+
+function isAuthLimited(ip) {
+  const rec = authFails.get(ip);
+  if (!rec) return false;
+  if (rec.resetAt < Date.now()) {
+    authFails.delete(ip);
+    return false;
+  }
+  return rec.count >= AUTH_MAX_FAILS;
+}
+
+function recordAuthFail(ip) {
+  const now = Date.now();
+  let rec = authFails.get(ip);
+  if (!rec || rec.resetAt < now) rec = { count: 0, resetAt: now + AUTH_FAIL_WINDOW_MS };
+  rec.count++;
+  authFails.set(ip, rec);
+}
+
+// 방에 없고 오래 사용되지 않은 세션 정리 (메모리 누수 방지)
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, sess] of sessions) {
+    const idle = now - (sess.lastSeen || 0) > SESSION_TTL_MS;
+    if (idle && !sess.roomCode && !playerSockets.has(sess.playerId)) {
+      sessions.delete(sid);
+      sessionsByPlayer.delete(sess.playerId);
+    }
+  }
+  for (const [ip, rec] of authFails) {
+    if (rec.resetAt < now) authFails.delete(ip);
+  }
+}, 60 * 60 * 1000).unref();
 
 function roomChannel(code) {
   return `room:${code}`;
@@ -81,6 +125,10 @@ function gameCtx(room) {
     endGame: () => {
       room.state = 'waiting';
       room.game = null;
+      // 게임 중 연결이 끊긴 채 돌아오지 않은 플레이어는 대기실 유예 규칙으로 정리
+      for (const p of room.players.values()) {
+        if (!p.connected) scheduleWaitingRemoval(room, p);
+      }
       broadcastRoomState(room);
       updateLobby();
     },
@@ -108,6 +156,18 @@ function scheduleEmptyCheck(room) {
       destroyRoom(r);
     }
   }, EMPTY_ROOM_MS);
+}
+
+// 대기 상태에서 연결이 끊긴 플레이어를 유예 시간 후 제거
+function scheduleWaitingRemoval(room, player) {
+  if (player.disconnectTimer) return;
+  player.disconnectTimer = setTimeout(() => {
+    player.disconnectTimer = null;
+    const r = roomsMod.getRoom(room.code);
+    if (!r) return;
+    const cur = r.players.get(player.id);
+    if (cur && !cur.connected) removePlayer(r, player.id);
+  }, WAITING_DISCONNECT_MS);
 }
 
 function removePlayer(room, playerId) {
@@ -158,7 +218,12 @@ io.on('connection', (socket) => {
     let sess = data && data.sessionId ? sessions.get(String(data.sessionId)) : null;
 
     if (!sess) {
+      const ip = clientIp(socket);
+      if (isAuthLimited(ip)) {
+        return cb({ ok: false, error: '시도가 너무 많습니다. 15분 후 다시 시도해주세요.' });
+      }
       if (String((data && data.code) || '') !== SITE_CODE) {
+        recordAuthFail(ip);
         return cb({ ok: false, error: '접속코드가 올바르지 않습니다.' });
       }
       if (!nickname) return cb({ ok: false, error: '닉네임을 입력해주세요.' });
@@ -173,6 +238,7 @@ io.on('connection', (socket) => {
     } else if (nickname && !sess.roomCode) {
       sess.nickname = nickname;
     }
+    sess.lastSeen = Date.now();
 
     // 같은 세션의 이전 소켓(다른 탭 등)은 끊는다
     const old = playerSockets.get(sess.playerId);
@@ -197,6 +263,12 @@ io.on('connection', (socket) => {
       socket.join(roomChannel(room.code));
       scheduleEmptyCheck(room);
       systemMsg(room, `${p.nickname}님이 다시 접속했습니다.`);
+      // 현재 방장이 오프라인이면 재접속한 플레이어에게 방장 위임 (진행 불가 상태 방지)
+      const curHost = room.players.get(room.hostId);
+      if (!curHost || !curHost.connected) {
+        room.hostId = sess.playerId;
+        systemMsg(room, `${p.nickname}님이 새 방장이 되었습니다.`);
+      }
       if (room.game) room.game.handleReconnect(sess.playerId);
       else broadcastRoomState(room);
       roomState = roomPublicState(room);
@@ -372,6 +444,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const sess = socket.data.session;
     if (!sess) return;
+    sess.lastSeen = Date.now();
     if (playerSockets.get(sess.playerId) === socket) playerSockets.delete(sess.playerId);
     const room = sess.roomCode ? roomsMod.getRoom(sess.roomCode) : null;
     if (!room) return;
@@ -388,13 +461,7 @@ io.on('connection', (socket) => {
       }
     }
     if (room.state === 'waiting') {
-      p.disconnectTimer = setTimeout(() => {
-        p.disconnectTimer = null;
-        const r = roomsMod.getRoom(room.code);
-        if (!r) return;
-        const cur = r.players.get(sess.playerId);
-        if (cur && !cur.connected) removePlayer(r, sess.playerId);
-      }, WAITING_DISCONNECT_MS);
+      scheduleWaitingRemoval(room, p);
       broadcastRoomState(room);
     } else if (room.game) {
       room.game.handleDisconnect(sess.playerId);

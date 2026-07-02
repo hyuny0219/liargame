@@ -221,7 +221,11 @@ function voteHtml(game, me) {
       ${escapeHtml(playerName(id))}${id === me ? ' (나)' : ''}</button>`;
   }
   html += '</div>';
-  html += `<div class="big-msg">${game.votedIds.length}/${game.order.length}명 투표 완료</div>`;
+  const voterCount = game.order.filter((id) => {
+    const p = App.room.players.find((q) => q.id === id);
+    return p && p.connected;
+  }).length;
+  html += `<div class="big-msg">${game.votedIds.length}/${voterCount}명 투표 완료</div>`;
   return html;
 }
 

@@ -279,8 +279,9 @@ function createGame(room, ctx) {
     const deltas = {};
     const liarWin = outcome === 'liarSurvived' || outcome === 'liarGuessed';
     if (liarWin) {
-      deltas[g.liarId] = outcome === 'liarSurvived' ? 3 : 2;
-      if (g.spyId) deltas[g.spyId] = 2;
+      // 방을 나간 플레이어는 점수표에서도 제외해 실제 반영과 표시를 일치시킨다
+      if (room.players.has(g.liarId)) deltas[g.liarId] = outcome === 'liarSurvived' ? 3 : 2;
+      if (g.spyId && room.players.has(g.spyId)) deltas[g.spyId] = 2;
     } else {
       // 시민 승리: 시민 전원 +1, 정답 대상에게 투표한 시민은 추가 +1
       const target = outcome === 'spyCaught' ? g.spyId : g.liarId;
@@ -357,8 +358,9 @@ function createGame(room, ctx) {
       advanceTurn();
       return { ok: true };
     }
-    if ((g.phase === 'guess' || g.phase === 'judge') && playerId === g.liarId) {
-      return { ok: false, error: '지금은 채팅할 수 없습니다. 제시어 입력창을 이용하세요.' };
+    // 라이어가 추리하는 동안 채팅으로 정답이 유출되는 것을 막는다
+    if (g.phase === 'guess' || g.phase === 'judge') {
+      return { ok: false, error: '라이어가 추리하는 동안에는 채팅할 수 없습니다.' };
     }
     ctx.emitRoom('chat', { kind: 'chat', playerId, nickname: nickname(playerId), text });
     return { ok: true };
@@ -486,8 +488,8 @@ function createGame(room, ctx) {
   function handleReconnect(playerId) {
     if (playerId === g.liarId) clearLiarGrace();
     if (activeIds().length >= 3) clearLowPlayerGrace();
-    const role = g.roles[playerId];
-    if (role) ctx.emitPlayer(playerId, 'game:role', role);
+    // 이번 라운드 역할이 없으면 null을 보내 클라이언트의 이전 역할 카드를 지운다
+    ctx.emitPlayer(playerId, 'game:role', g.roles[playerId] || null);
     if (g.phase === 'judge' && playerId === g.judgeId) sendJudgePrompt();
     ctx.broadcastRoom();
   }

@@ -120,9 +120,11 @@ function updateChatInput() {
       const cur = App.room.players.find((p) => p.id === currentId);
       placeholder = (cur ? cur.nickname : game.names[currentId] || '?') + '님의 설명 차례입니다...';
     }
-  } else if (game && (game.phase === 'guess' || game.phase === 'judge') && game.accusedId === App.me.playerId) {
+  } else if (game && (game.phase === 'guess' || game.phase === 'judge')) {
     disabled = true;
-    placeholder = '제시어 입력창을 이용하세요';
+    placeholder = game.accusedId === App.me.playerId
+      ? '제시어 입력창을 이용하세요'
+      : '라이어가 추리하는 동안에는 채팅할 수 없습니다';
   }
   input.disabled = disabled;
   input.placeholder = placeholder;
@@ -210,6 +212,11 @@ function initSocket() {
       App.myVote = null; // 단계가 바뀌면 투표 선택 초기화 (재투표 대비)
       if (phase === 'role') { App.judgePrompt = null; App._lastTurnKey = null; }
       if (!phase) { App.myRole = null; App.judgePrompt = null; App._lastTurnKey = null; }
+    }
+    // 서버 투표 목록에 내가 없으면 선택 표시 초기화 (재투표 시작 시 votes가 비워짐)
+    const g = state.game;
+    if (g && g.phase === 'vote' && App.myVote && !g.votedIds.includes(App.me.playerId)) {
+      App.myVote = null;
     }
     renderRoom();
   });

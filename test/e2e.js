@@ -65,7 +65,7 @@ async function main() {
   }));
   const roles = {}; // playerId -> role
   let liarId = null;
-  let nexted = { discuss: false, result: false, final: false };
+  let nexted = { discuss: false, guessChat: false, result: false, final: false };
   let phaseLog = [];
 
   const done = new Promise((resolve, reject) => {
@@ -118,6 +118,12 @@ async function main() {
               : liarId;
             const res = await emitP(bot.socket, 'game:vote', { targetId: target });
             assert(res.ok, `${bot.nickname} 투표 성공`);
+          }
+
+          if (g.phase === 'guess' && bot.playerId !== liarId && !nexted.guessChat) {
+            nexted.guessChat = true;
+            const res = await emitP(bot.socket, 'chat', { text: '정답 유출 시도' });
+            assert(res.ok === false, '라이어 추리 중에는 채팅이 차단됨');
           }
 
           if (g.phase === 'guess' && bot.playerId === liarId && !bot.guessed) {
