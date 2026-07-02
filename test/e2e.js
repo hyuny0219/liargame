@@ -116,7 +116,7 @@ async function main() {
             const target = bot.playerId === liarId
               ? g.order.find((id) => id !== bot.playerId)
               : liarId;
-            const res = await emitP(bot.socket, 'game:vote', { targetId: target });
+            const res = await emitP(bot.socket, 'game:vote', { targetId: target, voteRound: g.voteRound });
             assert(res.ok, `${bot.nickname} 투표 성공`);
           }
 

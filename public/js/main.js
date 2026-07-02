@@ -53,8 +53,14 @@ function enterLobby() {
   });
 }
 
+// 서버-클라이언트 시계 오차 보정 (상태 수신 시점에만 계산)
+function syncClock(state) {
+  if (state && state.serverNow) App._clockOffset = state.serverNow - Date.now();
+}
+
 function enterRoom(roomState) {
   App.room = roomState;
+  syncClock(roomState);
   $('#chat-log').innerHTML = '';
   showScreen('room');
   renderRoom();
@@ -139,7 +145,8 @@ setInterval(() => {
   const el = $('#phase-timer');
   if (!el) return;
   if (!game || !game.phaseEndsAt) { el.textContent = ''; return; }
-  const remain = Math.max(0, Math.ceil((game.phaseEndsAt - Date.now()) / 1000));
+  const now = Date.now() + (App._clockOffset || 0);
+  const remain = Math.max(0, Math.ceil((game.phaseEndsAt - now) / 1000));
   el.textContent = remain + '초';
   el.classList.toggle('low', remain <= 10);
 }, 250);
@@ -207,6 +214,7 @@ function initSocket() {
     if (!App.room) return;
     const prevPhase = App.room.game ? App.room.game.phase : null;
     App.room = state;
+    syncClock(state);
     const phase = state.game ? state.game.phase : null;
     if (phase !== prevPhase) {
       App.myVote = null; // 단계가 바뀌면 투표 선택 초기화 (재투표 대비)

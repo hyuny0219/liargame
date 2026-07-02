@@ -83,6 +83,7 @@ function systemMsg(room, text) {
 
 function roomPublicState(room) {
   return {
+    serverNow: Date.now(), // 클라이언트 타이머의 시계 오차 보정용
     code: room.code,
     name: room.name,
     isPublic: room.isPublic,
@@ -410,7 +411,7 @@ io.on('connection', (socket) => {
     cb = cbOf(cb);
     const { sess, room } = currentCtx();
     if (!sess || !room || !room.game) return cb({ ok: false, error: '게임이 진행 중이 아닙니다.' });
-    cb(room.game.handleVote(sess.playerId, String((data && data.targetId) || '')));
+    cb(room.game.handleVote(sess.playerId, String((data && data.targetId) || ''), data && data.voteRound));
   });
 
   socket.on('game:guess', (data, cb) => {

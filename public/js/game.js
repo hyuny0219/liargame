@@ -339,7 +339,8 @@ function bindGameEvents(game, me, isHost) {
   document.querySelectorAll('[data-vote]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const targetId = btn.dataset.vote;
-      App.socket.emit('game:vote', { targetId }, (res) => {
+      const voteRound = App.room.game ? App.room.game.voteRound : 0;
+      App.socket.emit('game:vote', { targetId, voteRound }, (res) => {
         if (res && res.ok) App.myVote = targetId;
         else if (res && res.error) showToast(res.error);
       });

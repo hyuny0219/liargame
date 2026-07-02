@@ -43,6 +43,7 @@ function createGame(room, ctx) {
     turnIndex: 0,
     describes: [], // { playerId, text, skipped }
     votes: {}, // voterId -> targetId
+    voteRound: 0, // 투표 회차 토큰 (재투표 전환 직전의 늦은 표가 섞이는 것 방지)
     revoted: false,
     tieCandidates: null,
     accusedId: null,
@@ -199,6 +200,7 @@ function createGame(room, ctx) {
   function beginVote() {
     g.phase = 'vote';
     g.votes = {};
+    g.voteRound++;
     ctx.systemMsg('투표 시간! 라이어라고 생각하는 사람에게 투표하세요.');
     setTimer(TIMES.vote, tally);
     ctx.broadcastRoom();
@@ -221,6 +223,7 @@ function createGame(room, ctx) {
         g.revoted = true;
         g.tieCandidates = topIds;
         g.votes = {};
+        g.voteRound++;
         g.phase = 'vote';
         ctx.systemMsg('동표가 나왔습니다! 최다 득표자들만 대상으로 재투표합니다.');
         setTimer(TIMES.revote, tally);
@@ -264,6 +267,18 @@ function createGame(room, ctx) {
     setTimer(TIMES.judge, () => finishRound('liarCaught'));
     sendJudgePrompt();
     ctx.systemMsg(`라이어의 답이 정답과 정확히 일치하지 않습니다. ${nickname(g.judgeId)}님이 정답 여부를 판정합니다.`);
+    ctx.broadcastRoom();
+  }
+
+  // 판정자 이탈 시 교체 — 남은 판정 시간은 그대로 유지한다
+  function reassignJudge() {
+    g.judgeId = pickJudge();
+    if (!g.judgeId) {
+      finishRound('liarCaught');
+      return;
+    }
+    sendJudgePrompt();
+    ctx.systemMsg(`판정자가 자리를 비워 ${nickname(g.judgeId)}님이 대신 판정합니다.`);
     ctx.broadcastRoom();
   }
 
@@ -366,8 +381,11 @@ function createGame(room, ctx) {
     return { ok: true };
   }
 
-  function handleVote(playerId, targetId) {
+  function handleVote(playerId, targetId, voteRound) {
     if (g.phase !== 'vote') return { ok: false, error: '지금은 투표 시간이 아닙니다.' };
+    if (Number(voteRound) !== g.voteRound) {
+      return { ok: false, error: '투표가 갱신되었습니다. 다시 투표해주세요.' };
+    }
     if (!g.order.includes(playerId)) return { ok: false, error: '이번 라운드에는 참여할 수 없습니다.' };
     if (playerId === targetId) return { ok: false, error: '자기 자신에게는 투표할 수 없습니다.' };
     if (!g.order.includes(targetId) || !room.players.has(targetId)) {
@@ -465,13 +483,11 @@ function createGame(room, ctx) {
         }
       }, LIAR_GRACE_MS);
     }
-    if (g.phase === 'describe' && g.order[g.turnIndex] === playerId) {
-      clearTimer();
-      g.describes.push({ playerId, text: null, skipped: true });
-      advanceTurn();
-      return;
-    }
+    // 설명 차례 중 끊긴 경우: 즉시 건너뛰지 않고 남은 발언 시간을 복귀 유예로 사용
+    // (시간 내 재접속하면 이어서 설명, 못 돌아오면 기존 타임아웃 처리로 차례가 넘어감)
     if (g.phase === 'vote') {
+      // 부재자의 표가 결과를 좌우하지 않도록 제거 (명시적 퇴장과 동일, 재접속 시 재투표 가능)
+      delete g.votes[playerId];
       const required = g.order.filter(isActive);
       if (required.length > 0 && required.every((id) => g.votes[id])) {
         tally();
@@ -479,7 +495,7 @@ function createGame(room, ctx) {
       }
     }
     if (g.phase === 'judge' && playerId === g.judgeId) {
-      beginJudge();
+      reassignJudge();
       return;
     }
     ctx.broadcastRoom();
@@ -514,7 +530,7 @@ function createGame(room, ctx) {
       const required = g.order.filter(isActive);
       if (required.length > 0 && required.every((id) => g.votes[id])) tally();
     } else if (g.phase === 'judge' && playerId === g.judgeId) {
-      beginJudge();
+      reassignJudge();
     }
     if (activeIds().length < 3 && inRound()) {
       abort('인원이 부족하여 게임을 종료합니다.');
@@ -543,6 +559,7 @@ function createGame(room, ctx) {
         skipped: !!d.skipped,
       })),
       votedIds: Object.keys(g.votes),
+      voteRound: g.voteRound,
       tieCandidates: g.tieCandidates,
       accusedId: g.accusedId,
       accusedName: g.accusedId ? nickname(g.accusedId) : null,
