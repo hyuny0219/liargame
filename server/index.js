@@ -13,8 +13,19 @@ const { CATEGORIES } = require('./words');
 const PORT = process.env.PORT || 3000;
 const SITE_CODE = process.env.SITE_CODE || '1234';
 
+const fs = require('fs');
+
 const app = express();
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.set('trust proxy', true); // Render 등 프록시 뒤에서 https/host 인식
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const INDEX_HTML = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+
+// OG 태그의 __ORIGIN__을 실제 배포 주소로 치환해 링크 미리보기가 동작하게 한다
+app.get('/', (req, res) => {
+  const origin = `${req.protocol}://${req.get('host')}`;
+  res.type('html').send(INDEX_HTML.replace(/__ORIGIN__/g, origin));
+});
+app.use(express.static(PUBLIC_DIR, { index: false }));
 app.get('/healthz', (req, res) => res.send('ok'));
 app.get('/api/meta', (req, res) => res.json({ categories: CATEGORIES }));
 
@@ -77,8 +88,17 @@ function roomChannel(code) {
   return `room:${code}`;
 }
 
+const CHAT_HISTORY_MAX = 100;
+
+// 채팅을 방 히스토리에 남기면서 브로드캐스트 (새로고침 시 복원용)
+function pushChat(room, msg) {
+  room.history.push(msg);
+  if (room.history.length > CHAT_HISTORY_MAX) room.history.shift();
+  io.to(roomChannel(room.code)).emit('chat', msg);
+}
+
 function systemMsg(room, text) {
-  io.to(roomChannel(room.code)).emit('chat', { kind: 'system', text });
+  pushChat(room, { kind: 'system', text });
 }
 
 function roomPublicState(room) {
@@ -117,12 +137,31 @@ function destroyRoom(room) {
 function gameCtx(room) {
   return {
     emitRoom: (ev, data) => io.to(roomChannel(room.code)).emit(ev, data),
+    chat: (msg) => pushChat(room, msg),
     emitPlayer: (playerId, ev, data) => {
       const s = playerSockets.get(playerId);
       if (s) s.emit(ev, data);
     },
     broadcastRoom: () => broadcastRoomState(room),
     systemMsg: (text) => systemMsg(room, text),
+    // 라운드 결과를 각 플레이어의 세션 전적에 반영
+    recordRound: (result) => {
+      if (result.voided) return;
+      const liarWin = result.outcome === 'liarSurvived' || result.outcome === 'liarGuessed';
+      for (const pid of result.participants || []) {
+        const s = sessionsByPlayer.get(pid);
+        if (!s || !s.stats) continue;
+        s.stats.rounds++;
+        if (pid === result.liarId) {
+          s.stats.liarRounds++;
+          if (liarWin) { s.stats.liarWins++; s.stats.wins++; }
+        } else if (result.spyId && pid === result.spyId) {
+          if (liarWin) s.stats.wins++;
+        } else if (!liarWin) {
+          s.stats.wins++;
+        }
+      }
+    },
     endGame: () => {
       room.state = 'waiting';
       room.game = null;
@@ -233,6 +272,7 @@ io.on('connection', (socket) => {
         playerId: 'p_' + crypto.randomBytes(6).toString('hex'),
         nickname,
         roomCode: null,
+        stats: { rounds: 0, wins: 0, liarRounds: 0, liarWins: 0 },
       };
       sessions.set(sess.sessionId, sess);
       sessionsByPlayer.set(sess.playerId, sess);
@@ -284,13 +324,15 @@ io.on('connection', (socket) => {
       sessionId: sess.sessionId,
       playerId: sess.playerId,
       nickname: sess.nickname,
+      stats: sess.stats,
       room: roomState,
+      chatHistory: roomState ? roomsMod.getRoom(sess.roomCode).history : undefined,
     });
   });
 
   socket.on('lobby:list', (data, cb) => {
     if (!socket.data.session) return cbOf(cb)({ ok: false, error: '로그인이 필요합니다.' });
-    cbOf(cb)({ ok: true, rooms: roomsMod.publicRoomList() });
+    cbOf(cb)({ ok: true, rooms: roomsMod.publicRoomList(), stats: socket.data.session.stats });
   });
 
   socket.on('room:create', (data, cb) => {
@@ -327,7 +369,8 @@ io.on('connection', (socket) => {
     if (cur) return cb({ ok: false, error: '이미 방에 참여 중입니다.' });
     const room = roomsMod.getRoom((data && data.code) || '');
     if (!room) return cb({ ok: false, error: '존재하지 않는 방 코드입니다.' });
-    if (room.state !== 'waiting') return cb({ ok: false, error: '게임이 이미 진행 중인 방입니다.' });
+    if (room.banned.has(sess.playerId)) return cb({ ok: false, error: '이 방에서 강퇴되어 다시 입장할 수 없습니다.' });
+    // 게임 중에도 입장 허용(관전) — 현재 라운드는 구경만 하고 다음 라운드부터 참여
     if (room.players.size >= room.settings.maxPlayers) return cb({ ok: false, error: '방이 가득 찼습니다.' });
     const dup = [...room.players.values()].some((p) => p.nickname === sess.nickname);
     if (dup) return cb({ ok: false, error: '같은 닉네임의 플레이어가 이미 방에 있습니다.' });
@@ -346,7 +389,7 @@ io.on('connection', (socket) => {
     systemMsg(room, `${sess.nickname}님이 입장했습니다.`);
     broadcastRoomState(room);
     updateLobby();
-    cb({ ok: true, room: roomPublicState(room) });
+    cb({ ok: true, room: roomPublicState(room), chatHistory: room.history });
   });
 
   socket.on('room:leave', (data, cb) => {
@@ -357,6 +400,28 @@ io.on('connection', (socket) => {
     removePlayer(room, sess.playerId);
     socket.join('lobby');
     socket.emit('lobby:rooms', roomsMod.publicRoomList());
+    cb({ ok: true });
+  });
+
+  socket.on('room:kick', (data, cb) => {
+    cb = cbOf(cb);
+    const { sess, room } = currentCtx();
+    if (!sess || !room) return cb({ ok: false, error: '방에 참여하고 있지 않습니다.' });
+    if (room.hostId !== sess.playerId) return cb({ ok: false, error: '방장만 강퇴할 수 있습니다.' });
+    const targetId = String((data && data.targetId) || '');
+    if (targetId === sess.playerId) return cb({ ok: false, error: '자기 자신은 강퇴할 수 없습니다.' });
+    const target = room.players.get(targetId);
+    if (!target) return cb({ ok: false, error: '대상을 찾을 수 없습니다.' });
+    room.banned.add(targetId);
+    const targetSocket = playerSockets.get(targetId);
+    if (targetSocket) {
+      targetSocket.leave(roomChannel(room.code));
+      targetSocket.emit('room:kicked');
+      targetSocket.join('lobby');
+      targetSocket.emit('lobby:rooms', roomsMod.publicRoomList());
+    }
+    systemMsg(room, `${target.nickname}님이 강퇴되었습니다.`);
+    removePlayer(room, targetId);
     cb({ ok: true });
   });
 
@@ -398,12 +463,7 @@ io.on('connection', (socket) => {
     const text = String((data && data.text) || '').trim().slice(0, 200);
     if (!text) return cb({ ok: false });
     if (room.game) return cb(room.game.handleChat(sess.playerId, text));
-    io.to(roomChannel(room.code)).emit('chat', {
-      kind: 'chat',
-      playerId: sess.playerId,
-      nickname: sess.nickname,
-      text,
-    });
+    pushChat(room, { kind: 'chat', playerId: sess.playerId, nickname: sess.nickname, text });
     cb({ ok: true });
   });
 

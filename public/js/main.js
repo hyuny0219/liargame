@@ -45,12 +45,33 @@ function enterLobby() {
   $('#lobby-nick').textContent = '👤 ' + App.me.nickname;
   showScreen('lobby');
   renderRoomList(App._lastRooms || []);
+  renderMyStats();
   App.socket.emit('lobby:list', null, (res) => {
     if (res && res.ok) {
       App._lastRooms = res.rooms;
       renderRoomList(res.rooms);
+      if (res.stats) {
+        App.stats = res.stats;
+        renderMyStats();
+      }
     }
   });
+}
+
+function renderMyStats() {
+  const el = $('#my-stats');
+  if (!el) return;
+  const s = App.stats;
+  if (!s || !s.rounds) {
+    el.textContent = '아직 플레이 기록이 없습니다. 첫 게임을 시작해보세요!';
+    return;
+  }
+  const rate = Math.round((s.wins / s.rounds) * 100);
+  const liar = s.liarRounds
+    ? ` · 라이어 ${s.liarRounds}회 중 <b>${s.liarWins}승</b>`
+    : '';
+  el.innerHTML = `${s.rounds}라운드 <b>${s.wins}승</b> (승률 ${rate}%)${liar}
+    <br><span style="font-size:11px">서버가 재시작되면 초기화됩니다</span>`;
 }
 
 // 서버-클라이언트 시계 오차 보정 (상태 수신 시점에만 계산)
@@ -58,10 +79,11 @@ function syncClock(state) {
   if (state && state.serverNow) App._clockOffset = state.serverNow - Date.now();
 }
 
-function enterRoom(roomState) {
+function enterRoom(roomState, chatHistory) {
   App.room = roomState;
   syncClock(roomState);
   $('#chat-log').innerHTML = '';
+  (chatHistory || []).forEach(appendChat); // 서버가 보관한 최근 대화 복원
   showScreen('room');
   renderRoom();
 }
@@ -105,6 +127,7 @@ function maybeTurnAlert() {
   el._timer = setTimeout(() => el.classList.add('hidden'), 2600);
 
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  Sound.play('turn');
   const input = $('#chat-input');
   if (input && !input.disabled) input.focus();
 }
@@ -151,6 +174,45 @@ setInterval(() => {
   el.classList.toggle('low', remain <= 10);
 }, 250);
 
+// ---------- 효과음 (WebAudio 합성음, 외부 파일 없음) ----------
+
+const Sound = {
+  muted: localStorage.getItem('liar_muted') === '1',
+  ctx: null,
+  ensure() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) this.ctx = new AC();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  tone(freq, delay, dur, vol) {
+    const t = this.ctx.currentTime + delay;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol || 0.07, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur);
+  },
+  play(name) {
+    if (this.muted) return;
+    this.ensure();
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    if (name === 'turn') { this.tone(880, 0, 0.15); this.tone(1174.66, 0.18, 0.3); }
+    else if (name === 'vote') { this.tone(659.25, 0, 0.12); this.tone(659.25, 0.16, 0.12); }
+    else if (name === 'result') { this.tone(523.25, 0, 0.14); this.tone(659.25, 0.13, 0.14); this.tone(783.99, 0.26, 0.32); }
+  },
+  toggle() {
+    this.muted = !this.muted;
+    localStorage.setItem('liar_muted', this.muted ? '1' : '0');
+    return this.muted;
+  },
+};
+
 // ---------- 모바일 가상 키보드 대응 ----------
 // 키보드가 올라와도 포커스된 입력창이 가려지지 않게 화면을 조정한다
 
@@ -186,10 +248,20 @@ function doAuth(payload, cb) {
     if (res && res.ok) {
       App.authed = true;
       App.me = { sessionId: res.sessionId, playerId: res.playerId, nickname: res.nickname };
+      if (res.stats) App.stats = res.stats;
       localStorage.setItem('liar_session', res.sessionId);
       localStorage.setItem('liar_nick', res.nickname);
-      if (res.room) enterRoom(res.room);
-      else enterLobby();
+      if (res.room) {
+        App._pendingRoom = null; // 이미 방에 있으면 초대 링크 무시
+        enterRoom(res.room, res.chatHistory);
+      } else {
+        enterLobby();
+        if (App._pendingRoom) {
+          const code = App._pendingRoom;
+          App._pendingRoom = null;
+          joinRoom(code); // 초대 링크로 들어온 경우 자동 입장
+        }
+      }
     }
     if (cb) cb(res);
   });
@@ -226,6 +298,10 @@ function initSocket() {
     if (g && g.phase === 'vote' && App.myVote && !g.votedIds.includes(App.me.playerId)) {
       App.myVote = null;
     }
+    if (phase !== prevPhase) {
+      if (phase === 'vote') Sound.play('vote');
+      else if (phase === 'result') Sound.play('result');
+    }
     renderRoom();
   });
 
@@ -254,6 +330,11 @@ function initSocket() {
       enterLobby();
       renderRoomList(App._lastRooms || []);
     });
+  });
+
+  App.socket.on('room:kicked', () => {
+    showToast('방장에 의해 방에서 강퇴되었습니다.');
+    enterLobby();
   });
 
   App.socket.on('session:takeover', () => {
@@ -290,6 +371,14 @@ function setupLogin() {
 // ---------- 방 공통 ----------
 
 function setupRoomControls() {
+  const muteBtn = $('#mute-btn');
+  muteBtn.textContent = Sound.muted ? '🔇' : '🔊';
+  muteBtn.addEventListener('click', () => {
+    muteBtn.textContent = Sound.toggle() ? '🔇' : '🔊';
+  });
+  // 첫 사용자 조작 시 오디오 컨텍스트 활성화 (브라우저 자동재생 정책 대응)
+  document.addEventListener('click', () => Sound.ensure(), { once: true });
+
   $('#leave-btn').addEventListener('click', () => {
     if (App.room && App.room.state === 'playing' && !confirm('게임이 진행 중입니다. 정말 나가시겠습니까?')) return;
     App.socket.emit('room:leave', null, () => enterLobby());
@@ -320,6 +409,14 @@ function setupRoomControls() {
 // ---------- 시작 ----------
 
 window.addEventListener('DOMContentLoaded', async () => {
+  // 초대 링크(?room=코드) 처리
+  const invited = (new URLSearchParams(location.search).get('room') || '').trim().toUpperCase();
+  if (/^[A-Z0-9]{6}$/.test(invited)) {
+    App._pendingRoom = invited;
+    history.replaceState(null, '', location.pathname); // 새로고침 시 재입장 시도 방지
+    document.querySelector('#screen-login .sub').textContent =
+      `초대받은 방(${invited})으로 바로 입장합니다`;
+  }
   try {
     const meta = await fetch('/api/meta').then((r) => r.json());
     App.categories = meta.categories || [];

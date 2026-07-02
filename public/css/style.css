@@ -66,13 +66,13 @@ body {
 .btn.block { width: 100%; margin-top: 8px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 
-input[type="text"], input[type="password"], select {
+input[type="text"], input[type="password"], select, textarea {
   width: 100%; padding: 10px 12px; margin: 4px 0 10px;
   border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg2); color: var(--text); font-size: 14px;
-  outline: none;
+  outline: none; font-family: inherit; resize: vertical;
 }
-input:focus, select:focus { border-color: var(--primary); }
+input:focus, select:focus, textarea:focus { border-color: var(--primary); }
 label { font-size: 13px; color: var(--muted); }
 
 .row { display: flex; gap: 8px; }
@@ -195,6 +195,14 @@ label { font-size: 13px; color: var(--muted); }
 .player-row .score { font-weight: 700; color: var(--primary-hover); }
 .crown { font-size: 13px; }
 .voted-mark { color: var(--ok); font-size: 13px; }
+.kick-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; font-size: 11px; padding: 2px 7px; cursor: pointer; flex: none;
+}
+.kick-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+.stats-note { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.stats-note b { color: var(--accent); }
 
 /* ---------- 게임 영역 ---------- */
 .phase-banner {

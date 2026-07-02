@@ -216,6 +216,66 @@ async function main() {
   assert(phaseLog.join('>').includes('describe') && phaseLog.includes('vote') && phaseLog.includes('result'),
     `전체 단계 진행됨 (${phaseLog.join(' → ')})`);
 
+  // ---------- 2부: 전적 / 관전 / 강퇴 / 채팅 기록 / 커스텀 제시어 ----------
+  console.log('\n[2부] 신규 기능 검증');
+
+  // 전적: 시민 봇은 1라운드 1승이어야 함
+  const citizenBot = bots.find((b) => b.playerId !== liarId);
+  const lobbyRes = await emitP(citizenBot.socket, 'lobby:list', null);
+  assert(lobbyRes.stats && lobbyRes.stats.rounds === 1 && lobbyRes.stats.wins === 1,
+    `전적 기록됨 (${JSON.stringify(lobbyRes.stats)})`);
+
+  // 게임 2 시작 → 관전자 입장 테스트
+  for (const bot of bots) {
+    bot.described = false; bot.voted = false; bot.guessed = false; bot.judged = false;
+  }
+  nexted.discuss = false; nexted.guessChat = false; nexted.result = false; nexted.final = false;
+  const started2 = await emitP(bots[0].socket, 'game:start', null);
+  assert(started2.ok, '두 번째 게임 시작');
+
+  const bot4 = { nickname: '구경꾼', socket: io(URL), playerId: null };
+  const auth4 = await emitP(bot4.socket, 'auth', { code: SITE_CODE, nickname: bot4.nickname });
+  bot4.playerId = auth4.playerId;
+  const joined4 = await emitP(bot4.socket, 'room:join', { code });
+  assert(joined4.ok, '게임 중인 방에 관전 입장 성공');
+  assert(!joined4.room.game.order.includes(bot4.playerId), '관전자는 진행 중인 라운드에 미포함');
+  assert(Array.isArray(joined4.chatHistory) && joined4.chatHistory.length > 0, '입장 시 채팅 기록 수신');
+
+  // 강퇴: 방장이 관전자를 강퇴 → 재입장 차단
+  const kickedEvent = new Promise((resolve) => bot4.socket.once('room:kicked', () => resolve(true)));
+  const kickRes = await emitP(bots[0].socket, 'room:kick', { targetId: bot4.playerId });
+  assert(kickRes.ok, '방장이 강퇴 실행');
+  assert(await Promise.race([kickedEvent, new Promise((r) => setTimeout(() => r(false), 3000))]),
+    '강퇴 알림 수신');
+  const rejoin = await emitP(bot4.socket, 'room:join', { code });
+  assert(rejoin.ok === false && /강퇴/.test(rejoin.error), '강퇴 후 재입장 차단');
+  const notHost = await emitP(bot4.socket, 'room:kick', { targetId: bots[0].playerId });
+  assert(notHost.ok === false, '방장이 아니면 강퇴 불가');
+
+  // 커스텀 제시어: 설정 반영 및 5개 미만 시 커스텀 카테고리 제외
+  const customOk = await emitP(bot4.socket, 'room:create', {
+    name: '커스텀방', isPublic: false,
+    settings: { categories: ['커스텀'], customWords: ['사과', '바나나', '포도', '수박', '참외', '딸기'] },
+  });
+  assert(customOk.ok && customOk.room.settings.categories.includes('커스텀')
+    && customOk.room.settings.customWords.length === 6, '커스텀 제시어 설정 반영');
+  await emitP(bot4.socket, 'room:leave', null);
+  const customBad = await emitP(bot4.socket, 'room:create', {
+    name: '커스텀부족', isPublic: false,
+    settings: { categories: ['커스텀'], customWords: ['하나', '둘'] },
+  });
+  assert(customBad.ok && !customBad.room.settings.categories.includes('커스텀'),
+    '제시어 5개 미만이면 커스텀 카테고리 자동 제외');
+
+  // pickRound 단위 검증 (커스텀 카테고리에서 뽑히는지)
+  const { pickRound } = require('../server/words');
+  const customList = ['가', '나', '다', '라', '마'];
+  const picked = pickRound(['커스텀'], customList);
+  assert(picked.category === '커스텀' && customList.includes(picked.word)
+    && customList.includes(picked.fakeWord) && picked.word !== picked.fakeWord,
+    '커스텀 카테고리에서 제시어/가짜 제시어 선택');
+
+  bot4.socket.close();
   for (const bot of bots) bot.socket.close();
   server.kill();
 

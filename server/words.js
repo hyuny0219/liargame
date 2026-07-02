@@ -77,20 +77,23 @@ const WORDS = {
 };
 
 const CATEGORIES = Object.keys(WORDS);
+const CUSTOM_CATEGORY = '커스텀'; // 방장이 직접 입력한 제시어 카테고리
 
 function randOf(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
 // 라운드에 쓸 카테고리/제시어(+바보 모드용 가짜 제시어) 선택
-function pickRound(categoryKeys) {
-  const keys = (categoryKeys || []).filter((k) => WORDS[k]);
-  const category = randOf(keys.length ? keys : CATEGORIES);
-  const list = WORDS[category];
+function pickRound(categoryKeys, customWords) {
+  const custom = Array.isArray(customWords) && customWords.length >= 5 ? customWords : null;
+  let keys = (categoryKeys || []).filter((k) => WORDS[k] || (k === CUSTOM_CATEGORY && custom));
+  if (!keys.length) keys = CATEGORIES;
+  const category = randOf(keys);
+  const list = category === CUSTOM_CATEGORY ? custom : WORDS[category];
   const word = randOf(list);
   let fakeWord = word;
   while (fakeWord === word) fakeWord = randOf(list);
   return { category, word, fakeWord };
 }
 
-module.exports = { WORDS, CATEGORIES, pickRound };
+module.exports = { WORDS, CATEGORIES, CUSTOM_CATEGORY, pickRound };

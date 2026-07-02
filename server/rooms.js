@@ -1,6 +1,6 @@
 'use strict';
 
-const { CATEGORIES } = require('./words');
+const { CATEGORIES, CUSTOM_CATEGORY } = require('./words');
 
 const rooms = new Map(); // code -> room
 
@@ -31,6 +31,7 @@ function sanitizeSettings(input, base) {
     discussTime: 90,
     maxPlayers: 8,
     categories: CATEGORIES.slice(),
+    customWords: [],
   };
   const s = { ...prev };
   if (!input || typeof input !== 'object') return s;
@@ -39,9 +40,19 @@ function sanitizeSettings(input, base) {
   if (DESCRIBE_TIMES.includes(Number(input.describeTime))) s.describeTime = Number(input.describeTime);
   if (DISCUSS_TIMES.includes(Number(input.discussTime))) s.discussTime = Number(input.discussTime);
   s.maxPlayers = clampInt(input.maxPlayers, 3, 10, prev.maxPlayers);
+  if (Array.isArray(input.customWords)) {
+    s.customWords = [...new Set(
+      input.customWords.map((w) => String(w).trim().slice(0, 20)).filter(Boolean)
+    )].slice(0, 100);
+  }
   if (Array.isArray(input.categories)) {
-    const cats = input.categories.filter((c) => CATEGORIES.includes(c));
+    const cats = input.categories.filter((c) => CATEGORIES.includes(c) || c === CUSTOM_CATEGORY);
     if (cats.length) s.categories = cats;
+  }
+  // 커스텀 제시어가 5개 미만이면 커스텀 카테고리는 사용할 수 없다
+  if (s.categories.includes(CUSTOM_CATEGORY) && s.customWords.length < 5) {
+    s.categories = s.categories.filter((c) => c !== CUSTOM_CATEGORY);
+    if (!s.categories.length) s.categories = CATEGORIES.slice();
   }
   return s;
 }
@@ -56,6 +67,8 @@ function createRoom({ name, isPublic, settings, hostId }) {
     settings: sanitizeSettings(settings),
     players: new Map(), // playerId -> { id, nickname, connected, score, disconnectTimer }
     game: null,
+    history: [], // 최근 채팅/시스템 메시지 (입장·재접속 시 복원용)
+    banned: new Set(), // 강퇴된 playerId
     emptyTimer: null,
     createdAt: Date.now(),
   };

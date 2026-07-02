@@ -13,7 +13,10 @@ function settingsFieldsHtml(s, idPrefix) {
   const catChecks = App.categories.map((c) => `
     <label class="radio">
       <input type="checkbox" name="${p}-cat" value="${escapeHtml(c)}" ${!s || s.categories.includes(c) ? 'checked' : ''}> ${escapeHtml(c)}
-    </label>`).join('');
+    </label>`).join('') + `
+    <label class="radio">
+      <input type="checkbox" name="${p}-cat" value="커스텀" ${s && s.categories.includes('커스텀') ? 'checked' : ''}> ✏️ 커스텀
+    </label>`;
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
   const st = s || { mode: 'basic', rounds: 3, describeTime: 60, discussTime: 90, maxPlayers: 8 };
   return `
@@ -42,7 +45,9 @@ function settingsFieldsHtml(s, idPrefix) {
       </div>
     </div>
     <label>주제 카테고리</label>
-    <div class="check-grid">${catChecks}</div>`;
+    <div class="check-grid">${catChecks}</div>
+    <label>✏️ 커스텀 제시어 — 쉼표/줄바꿈으로 구분, 5개 이상 (커스텀 카테고리 선택 시 사용)</label>
+    <textarea id="${p}-custom" rows="2" placeholder="예: 김치, 만두, 라면, 떡국, 잡채">${escapeHtml(((s && s.customWords) || []).join(', '))}</textarea>`;
 }
 
 function readSettingsFields(idPrefix) {
@@ -54,7 +59,17 @@ function readSettingsFields(idPrefix) {
     describeTime: Number($(`#${p}-desctime`).value),
     discussTime: Number($(`#${p}-disctime`).value),
     categories: [...document.querySelectorAll(`input[name="${p}-cat"]:checked`)].map((el) => el.value),
+    customWords: $(`#${p}-custom`).value.split(/[,\n]/).map((w) => w.trim()).filter(Boolean),
   };
+}
+
+// 카테고리/커스텀 제시어 조합 검증 (방 만들기·설정 변경 공용)
+function validateSettings(settings) {
+  if (settings.categories.length === 0) return '카테고리를 1개 이상 선택해주세요.';
+  if (settings.categories.includes('커스텀') && settings.customWords.length < 5) {
+    return '커스텀 카테고리를 사용하려면 제시어를 5개 이상 입력해주세요.';
+  }
+  return null;
 }
 
 function buildCreateFormFields() {
@@ -85,8 +100,8 @@ function renderRoomList(rooms) {
       </div>`;
     const btn = document.createElement('button');
     btn.className = 'btn primary small';
-    btn.textContent = '입장';
-    btn.disabled = playing || r.players >= r.maxPlayers;
+    btn.textContent = playing ? '관전' : '입장';
+    btn.disabled = r.players >= r.maxPlayers;
     btn.addEventListener('click', () => joinRoom(r.code));
     item.appendChild(btn);
     list.appendChild(item);
@@ -95,7 +110,7 @@ function renderRoomList(rooms) {
 
 function joinRoom(code) {
   App.socket.emit('room:join', { code }, (res) => {
-    if (res && res.ok) enterRoom(res.room);
+    if (res && res.ok) enterRoom(res.room, res.chatHistory);
     else showToast((res && res.error) || '입장에 실패했습니다.');
   });
 }
@@ -104,7 +119,8 @@ function setupLobby() {
   $('#create-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const settings = readSettingsFields('create');
-    if (settings.categories.length === 0) return showToast('카테고리를 1개 이상 선택해주세요.');
+    const err = validateSettings(settings);
+    if (err) return showToast(err);
     const isPublic = document.querySelector('input[name="create-public"]:checked').value === '1';
     App.socket.emit('room:create', {
       name: $('#create-name').value.trim(),

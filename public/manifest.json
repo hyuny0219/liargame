@@ -1,0 +1,13 @@
+{
+  "name": "라이어게임",
+  "short_name": "라이어게임",
+  "description": "친구들과 온라인으로 즐기는 실시간 라이어게임",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12141c",
+  "theme_color": "#12141c",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

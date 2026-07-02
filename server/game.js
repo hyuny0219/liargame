@@ -134,7 +134,7 @@ function createGame(room, ctx) {
     g.names = {};
     for (const id of ids) g.names[id] = nickname(id);
 
-    const picked = pickRound(room.settings.categories);
+    const picked = pickRound(room.settings.categories, room.settings.customWords);
     g.category = picked.category;
     g.word = picked.word;
     g.fakeWord = g.mode === 'fool' ? picked.fakeWord : null;
@@ -326,6 +326,7 @@ function createGame(room, ctx) {
       votes: { ...g.votes },
       deltas,
     };
+    ctx.recordRound({ ...g.result, participants: g.order.slice() });
     g.phase = 'result';
     ctx.broadcastRoom();
   }
@@ -369,7 +370,7 @@ function createGame(room, ctx) {
         return { ok: false, error: '설명 단계에서는 자신의 차례에만 발언할 수 있습니다.' };
       }
       g.describes.push({ playerId, text, skipped: false });
-      ctx.emitRoom('chat', { kind: 'describe', playerId, nickname: nickname(playerId), text });
+      ctx.chat({ kind: 'describe', playerId, nickname: nickname(playerId), text });
       advanceTurn();
       return { ok: true };
     }
@@ -377,7 +378,7 @@ function createGame(room, ctx) {
     if (g.phase === 'guess' || g.phase === 'judge') {
       return { ok: false, error: '라이어가 추리하는 동안에는 채팅할 수 없습니다.' };
     }
-    ctx.emitRoom('chat', { kind: 'chat', playerId, nickname: nickname(playerId), text });
+    ctx.chat({ kind: 'chat', playerId, nickname: nickname(playerId), text });
     return { ok: true };
   }
 

@@ -38,6 +38,7 @@ function renderPlayers() {
   const panel = $('#players-panel');
   const game = room.game;
   const votedSet = new Set(game && game.phase === 'vote' ? game.votedIds : []);
+  const iAmHost = room.hostId === App.me.playerId;
   let html = `<h3>👥 참가자 (${room.players.length}/${room.settings.maxPlayers})</h3>`;
   const sorted = [...room.players].sort((a, b) => b.score - a.score);
   for (const p of sorted) {
@@ -49,9 +50,19 @@ function renderPlayers() {
         ${room.hostId === p.id ? '<span class="crown" title="방장">👑</span>' : ''}
         ${votedSet.has(p.id) ? '<span class="voted-mark" title="투표 완료">✔</span>' : ''}
         ${room.state === 'playing' || p.score > 0 ? `<span class="score">${p.score}점</span>` : ''}
+        ${iAmHost && !isMe ? `<button class="kick-btn" data-kick="${p.id}" data-kick-name="${escapeHtml(p.nickname)}" title="강퇴">✕</button>` : ''}
       </div>`;
   }
   panel.innerHTML = html;
+
+  panel.querySelectorAll('[data-kick]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!confirm(`${btn.dataset.kickName}님을 강퇴하시겠습니까? 강퇴하면 이 방에 다시 들어올 수 없습니다.`)) return;
+      App.socket.emit('room:kick', { targetId: btn.dataset.kick }, (res) => {
+        if (res && !res.ok && res.error) showToast(res.error);
+      });
+    });
+  });
 }
 
 // ---------- 대기실 ----------
@@ -66,6 +77,7 @@ function renderWaiting(area) {
     <div class="waiting-head">
       <div class="big">게임 대기 중</div>
       <div class="desc">${room.isPublic ? '공개방' : '비공개방'} · 친구에게 방 코드 <b style="color:var(--accent)">${room.code}</b>를 공유하세요</div>
+      <button id="invite-btn" class="btn ghost small" style="margin-top:8px">🔗 초대 링크 공유</button>
     </div>
     <div class="settings-view">
       <div class="sv-item"><span class="sv-label">모드</span>${MODE_LABELS[s.mode]}</div>
@@ -86,6 +98,18 @@ function renderWaiting(area) {
   }
   area.innerHTML = html;
 
+  $('#invite-btn').addEventListener('click', () => {
+    const url = `${location.origin}/?room=${room.code}`;
+    const text = `🎭 라이어게임에 초대합니다! (방 코드: ${room.code})`;
+    if (navigator.share) {
+      navigator.share({ title: '라이어게임 초대', text, url }).catch(() => {});
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => showToast('초대 링크가 복사되었습니다!', true));
+    } else {
+      showToast(url, true);
+    }
+  });
+
   if (isHost) {
     $('#start-btn').addEventListener('click', () => {
       App.socket.emit('game:start', null, (res) => {
@@ -100,7 +124,8 @@ function renderWaiting(area) {
         '<button id="save-settings-btn" class="btn ok block">설정 저장</button>';
       $('#save-settings-btn').addEventListener('click', () => {
         const settings = readSettingsFields('edit');
-        if (settings.categories.length === 0) return showToast('카테고리를 1개 이상 선택해주세요.');
+        const err = validateSettings(settings);
+        if (err) return showToast(err);
         App.socket.emit('room:settings', { settings }, (res) => {
           if (res && res.ok) showToast('설정이 저장되었습니다.', true);
           else showToast((res && res.error) || '설정 변경에 실패했습니다.');
@@ -127,6 +152,11 @@ function renderGame(area) {
       </div>
       <div id="phase-timer" class="timer"></div>
     </div>`;
+
+  // 관전자(이번 라운드 미참여) 안내
+  if (game.order.length && !game.order.includes(me) && game.phase !== 'final') {
+    html += `<div class="big-msg">🎬 <span class="em">관전 중</span>입니다. 다음 라운드부터 참여할 수 있어요!</div>`;
+  }
 
   // 내 역할 카드 (최종 결과 화면 제외)
   if (App.myRole && game.phase !== 'final') {
