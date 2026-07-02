@@ -148,11 +148,28 @@ function syncClock(state) {
   if (state && state.serverNow) App._clockOffset = state.serverNow - Date.now();
 }
 
+// 타이머 링 진행률용 단계 길이 추적 — 재접속/중간 입장 시에도 링이 표시되도록
+// (마감 시각이 바뀌었거나 아직 길이를 모르면 지금 시점 기준 남은 시간으로 기록)
+function trackPhaseTimer(state) {
+  const endsAt = state && state.game ? state.game.phaseEndsAt : null;
+  if (!endsAt) {
+    App._phaseDur = null;
+    App._phaseEndsAt = null;
+    return;
+  }
+  if (endsAt !== App._phaseEndsAt || !App._phaseDur) {
+    App._phaseEndsAt = endsAt;
+    App._phaseDur = Math.max(1000, endsAt - (Date.now() + (App._clockOffset || 0)));
+  }
+}
+
 function enterLobby() {
   App.room = null;
   App.myRole = null;
   App.judgePrompt = null;
   App.myVote = null;
+  App._phaseDur = null;
+  App._phaseEndsAt = null;
   closeDrawer();
   $('#lobby-nick').textContent = '😎 ' + App.me.nickname;
   showScreen('lobby');
@@ -189,6 +206,7 @@ function renderMyStats() {
 function enterRoom(roomState, chatHistory) {
   App.room = roomState;
   syncClock(roomState);
+  trackPhaseTimer(roomState);
   $('#chat-log').innerHTML = '';
   (chatHistory || []).forEach(appendChat); // 서버가 보관한 최근 대화 복원
   showScreen('room');
@@ -383,7 +401,6 @@ function initSocket() {
   App.socket.on('room:state', (state) => {
     if (!App.room) return;
     const prevPhase = App.room.game ? App.room.game.phase : null;
-    const prevEndsAt = App.room.game ? App.room.game.phaseEndsAt : null;
     App.room = state;
     syncClock(state);
     const phase = state.game ? state.game.phase : null;
@@ -403,12 +420,7 @@ function initSocket() {
       if (phase === 'final') burstConfetti(110);
       if (phase === 'vote') Sound.play('vote');
     }
-    // 타이머 진행률 계산용: 단계 시간이 갱신되면 전체 길이 기록
-    const endsAt = state.game ? state.game.phaseEndsAt : null;
-    if (endsAt && endsAt !== prevEndsAt) {
-      App._phaseDur = Math.max(1000, endsAt - (Date.now() + (App._clockOffset || 0)));
-    }
-    if (!endsAt) App._phaseDur = null;
+    trackPhaseTimer(state);
     // 서버 투표 목록에 내가 없으면 선택 표시 초기화 (재투표 시작 시 votes가 비워짐)
     const g = state.game;
     if (g && g.phase === 'vote' && App.myVote && !g.votedIds.includes(App.me.playerId)) {
