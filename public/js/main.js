@@ -83,16 +83,38 @@ function appendChat(msg) {
   log.scrollTop = log.scrollHeight;
 }
 
+// 내 설명 차례가 되면 화면 전체에 알림 효과 + 진동
+function maybeTurnAlert() {
+  const game = App.room && App.room.game;
+  if (!game || game.phase !== 'describe') return;
+  if (game.order[game.turnIndex] !== App.me.playerId) return;
+  const key = game.round + '-' + game.turnIndex;
+  if (App._lastTurnKey === key) return; // 같은 차례에 중복 알림 방지
+  App._lastTurnKey = key;
+
+  const el = $('#turn-alert');
+  el.classList.remove('hidden');
+  void el.offsetWidth; // 애니메이션 재시작
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.add('hidden'), 2600);
+
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  const input = $('#chat-input');
+  if (input && !input.disabled) input.focus();
+}
+
 // 게임 단계에 따라 채팅 입력 상태 갱신
 function updateChatInput() {
   const input = $('#chat-input');
   const game = App.room && App.room.game;
   let disabled = false;
   let placeholder = '메시지 입력...';
+  let myTurn = false;
   if (game && game.phase === 'describe') {
     const currentId = game.order[game.turnIndex];
     if (currentId === App.me.playerId) {
       placeholder = '제시어를 한 문장으로 설명하세요!';
+      myTurn = true;
     } else {
       disabled = true;
       const cur = App.room.players.find((p) => p.id === currentId);
@@ -104,6 +126,8 @@ function updateChatInput() {
   }
   input.disabled = disabled;
   input.placeholder = placeholder;
+  input.classList.toggle('my-turn', myTurn);
+  maybeTurnAlert();
 }
 
 // ---------- 타이머 ----------
@@ -184,8 +208,8 @@ function initSocket() {
     const phase = state.game ? state.game.phase : null;
     if (phase !== prevPhase) {
       App.myVote = null; // 단계가 바뀌면 투표 선택 초기화 (재투표 대비)
-      if (phase === 'role') { App.judgePrompt = null; }
-      if (!phase) { App.myRole = null; App.judgePrompt = null; }
+      if (phase === 'role') { App.judgePrompt = null; App._lastTurnKey = null; }
+      if (!phase) { App.myRole = null; App.judgePrompt = null; App._lastTurnKey = null; }
     }
     renderRoom();
   });

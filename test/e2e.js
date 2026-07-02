@@ -65,7 +65,7 @@ async function main() {
   }));
   const roles = {}; // playerId -> role
   let liarId = null;
-  let nexted = { result: false, final: false };
+  let nexted = { discuss: false, result: false, final: false };
   let phaseLog = [];
 
   const done = new Promise((resolve, reject) => {
@@ -103,6 +103,12 @@ async function main() {
               const res = await emitP(bot.socket, 'chat', { text: `${bot.nickname}의 설명입니다` });
               assert(res.ok, `${bot.nickname} 설명 전송 성공`);
             }
+          }
+
+          if (g.phase === 'discuss' && state.hostId === bot.playerId && !nexted.discuss) {
+            nexted.discuss = true;
+            const res = await emitP(bot.socket, 'game:skipDiscuss', null);
+            assert(res.ok, '방장이 토론을 조기 종료하고 투표 시작');
           }
 
           if (g.phase === 'vote' && !bot.voted && liarId) {

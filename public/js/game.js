@@ -143,6 +143,9 @@ function renderGame(area) {
     case 'discuss':
       html += describeListHtml(game) +
         `<div class="big-msg">채팅으로 자유롭게 토론하세요. 누가 <span class="em">라이어</span>일까요?</div>`;
+      if (isHost) {
+        html += `<button id="skip-discuss-btn" class="btn primary block">🗳️ 토론 끝내고 바로 투표하기</button>`;
+      }
       break;
     case 'vote':
       html += voteHtml(game, me);
@@ -357,6 +360,15 @@ function bindGameEvents(game, me, isHost) {
   if (judgeOk) {
     judgeOk.addEventListener('click', () => App.socket.emit('game:judge', { correct: true }, () => {}));
     $('#judge-no').addEventListener('click', () => App.socket.emit('game:judge', { correct: false }, () => {}));
+  }
+
+  const skipBtn = $('#skip-discuss-btn');
+  if (skipBtn) {
+    skipBtn.addEventListener('click', () => {
+      App.socket.emit('game:skipDiscuss', null, (res) => {
+        if (res && !res.ok && res.error) showToast(res.error);
+      });
+    });
   }
 
   const nextBtn = $('#next-btn');

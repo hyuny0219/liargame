@@ -355,6 +355,13 @@ io.on('connection', (socket) => {
     cb(room.game.handleJudge(sess.playerId, !!(data && data.correct)));
   });
 
+  socket.on('game:skipDiscuss', (data, cb) => {
+    cb = cbOf(cb);
+    const { sess, room } = currentCtx();
+    if (!sess || !room || !room.game) return cb({ ok: false, error: '게임이 진행 중이 아닙니다.' });
+    cb(room.game.handleSkipDiscuss(sess.playerId));
+  });
+
   socket.on('game:next', (data, cb) => {
     cb = cbOf(cb);
     const { sess, room } = currentCtx();

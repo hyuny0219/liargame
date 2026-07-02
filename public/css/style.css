@@ -89,6 +89,49 @@ label { font-size: 13px; color: var(--muted); }
 #toast.show { opacity: 1; }
 #toast.info { background: var(--primary); }
 
+/* ---------- 내 차례 알림 오버레이 ---------- */
+#turn-alert {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 12, 22, 0.82);
+  pointer-events: none; /* 뒤의 입력창 사용을 막지 않음 */
+  animation: turnFade 2.6s ease forwards;
+}
+.turn-alert-inner {
+  text-align: center;
+  animation: turnPop 0.45s cubic-bezier(0.18, 1.4, 0.4, 1);
+}
+.turn-alert-inner .turn-emoji { font-size: 64px; margin-bottom: 8px; }
+.turn-alert-inner .turn-title {
+  font-size: 34px; font-weight: 800; color: var(--accent);
+  text-shadow: 0 0 24px rgba(255, 209, 102, 0.55);
+  animation: turnGlow 0.8s ease-in-out infinite alternate;
+}
+.turn-alert-inner .turn-sub { margin-top: 8px; font-size: 15px; color: var(--text); }
+@keyframes turnPop {
+  from { transform: scale(0.4); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+@keyframes turnGlow {
+  from { text-shadow: 0 0 10px rgba(255, 209, 102, 0.3); }
+  to { text-shadow: 0 0 32px rgba(255, 209, 102, 0.85); }
+}
+@keyframes turnFade {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 내 차례일 때 채팅 입력창 강조 */
+.chat-form input.my-turn {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.25);
+  animation: turnGlowBorder 1s ease-in-out infinite alternate;
+}
+@keyframes turnGlowBorder {
+  from { box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.15); }
+  to { box-shadow: 0 0 0 4px rgba(255, 209, 102, 0.4); }
+}
+
 /* ---------- 로그인 ---------- */
 .login-card { width: 360px; text-align: center; padding: 36px 28px; }
 .logo { font-size: 32px; margin-bottom: 8px; }

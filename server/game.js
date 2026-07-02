@@ -398,6 +398,15 @@ function createGame(room, ctx) {
     return { ok: true };
   }
 
+  // 방장이 토론을 조기 종료하고 바로 투표 시작
+  function handleSkipDiscuss(playerId) {
+    if (playerId !== room.hostId) return { ok: false, error: '방장만 토론을 끝낼 수 있습니다.' };
+    if (g.phase !== 'discuss') return { ok: false, error: '지금은 토론 시간이 아닙니다.' };
+    ctx.systemMsg('방장이 토론을 끝냈습니다. 바로 투표를 시작합니다!');
+    beginVote();
+    return { ok: true };
+  }
+
   function handleJudge(playerId, correct) {
     if (g.phase !== 'judge' || playerId !== g.judgeId) {
       return { ok: false, error: '판정 권한이 없습니다.' };
@@ -554,6 +563,7 @@ function createGame(room, ctx) {
     handleVote,
     handleGuess,
     handleJudge,
+    handleSkipDiscuss,
     handleNext,
     handleDisconnect,
     handleReconnect,
