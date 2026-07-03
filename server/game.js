@@ -1,6 +1,7 @@
 'use strict';
 
-const { pickRound } = require('./words');
+const { pickRound, WORDS, CUSTOM_CATEGORY } = require('./words');
+const { LIAR_LINES, CITIZEN_GENERIC, DISCUSS_LINES, citizenLine, randOf } = require('./hints');
 
 // 단계별 제한 시간 (초) — 설명/토론 시간은 방 설정을 따름
 const TIMES = { role: 7, vote: 45, revote: 30, guess: 45, judge: 30 };
@@ -54,7 +55,64 @@ function createGame(room, ctx) {
   let timer = null;
   let liarGraceTimer = null;
   let lowPlayerTimer = null;
+  let botTimers = [];
   let ended = false;
+
+  // ---------- 봇 플레이어 ----------
+
+  function isBot(id) {
+    const p = room.players.get(id);
+    return !!(p && p.isBot);
+  }
+
+  function scheduleBot(ms, fn) {
+    botTimers.push(setTimeout(fn, ms));
+  }
+
+  function clearBotTimers() {
+    for (const t of botTimers) clearTimeout(t);
+    botTimers = [];
+  }
+
+  // 봇의 설명 한 마디 (역할에 따라 다르게, 이번 라운드에 이미 나온 문장은 피한다)
+  function botDescribeLine(id) {
+    const used = new Set(g.describes.map((d) => d.text).filter(Boolean));
+    const pickUnused = (pool) => {
+      const fresh = pool.filter((line) => !used.has(line));
+      return randOf(fresh.length ? fresh : pool);
+    };
+    const role = g.roles[id];
+    if (!role) return pickUnused(CITIZEN_GENERIC);
+    if (role.role === 'liar') return pickUnused(LIAR_LINES); // 제시어를 모르는 채 허세
+    if (role.role === 'spy') return pickUnused(CITIZEN_GENERIC); // 라이어를 돕기 위해 두루뭉술하게
+    // 시민(바보 모드 라이어 포함): 제시어 힌트 — 앞사람과 겹치면 일반 문장으로 대체
+    const hint = citizenLine(role.word);
+    return used.has(hint) ? pickUnused(CITIZEN_GENERIC) : hint;
+  }
+
+  // 현재 설명 차례가 봇이면 잠시 후 자동 발언
+  function maybeScheduleBotTurn() {
+    const cur = g.order[g.turnIndex];
+    if (!isBot(cur)) return;
+    scheduleBot(2000 + Math.random() * 2500, () => {
+      if (g.phase === 'describe' && g.order[g.turnIndex] === cur) {
+        handleChat(cur, botDescribeLine(cur));
+      }
+    });
+  }
+
+  // 투표 단계: 봇들이 시차를 두고 무작위 투표 (재투표 시 후보 내에서)
+  function scheduleBotVotes() {
+    for (const id of g.order) {
+      if (!isBot(id) || !room.players.has(id)) continue;
+      scheduleBot(1500 + Math.random() * 4000, () => {
+        if (g.phase !== 'vote') return;
+        const pool = (g.tieCandidates || g.order)
+          .filter((t) => t !== id && room.players.has(t));
+        if (pool.length) handleVote(id, randOf(pool), g.voteRound);
+      });
+    }
+  }
 
   function nickname(id) {
     const p = room.players.get(id);
@@ -146,6 +204,7 @@ function createGame(room, ctx) {
     g.result = null;
     clearLiarGrace();
     clearLowPlayerGrace();
+    clearBotTimers();
 
     g.names = {};
     for (const id of ids) g.names[id] = nickname(id);
@@ -203,6 +262,8 @@ function createGame(room, ctx) {
       ctx.systemMsg(`${nickname(cur)}님이 시간을 초과하여 차례를 넘깁니다.`);
       advanceTurn();
     });
+    clearBotTimers();
+    maybeScheduleBotTurn();
     ctx.broadcastRoom();
   }
 
@@ -210,6 +271,15 @@ function createGame(room, ctx) {
     g.phase = 'discuss';
     ctx.systemMsg('토론 시간입니다. 누가 라이어인지 자유롭게 이야기해보세요!');
     setTimer(room.settings.discussTime, beginVote);
+    // 봇들의 토론 수다 (전부는 아니고 확률적으로)
+    clearBotTimers();
+    for (const id of g.order) {
+      if (isBot(id) && Math.random() < 0.7) {
+        scheduleBot(1500 + Math.random() * room.settings.discussTime * 600, () => {
+          if (g.phase === 'discuss') handleChat(id, randOf(DISCUSS_LINES));
+        });
+      }
+    }
     ctx.broadcastRoom();
   }
 
@@ -219,6 +289,8 @@ function createGame(room, ctx) {
     g.voteRound++;
     ctx.systemMsg('투표 시간! 라이어라고 생각하는 사람에게 투표하세요.');
     setTimer(TIMES.vote, tally);
+    clearBotTimers();
+    scheduleBotVotes();
     ctx.broadcastRoom();
   }
 
@@ -243,6 +315,8 @@ function createGame(room, ctx) {
         g.phase = 'vote';
         ctx.systemMsg('동표가 나왔습니다! 최다 득표자들만 대상으로 재투표합니다.');
         setTimer(TIMES.revote, tally);
+        clearBotTimers();
+        scheduleBotVotes();
         ctx.broadcastRoom();
         return;
       }
@@ -264,15 +338,40 @@ function createGame(room, ctx) {
     g.phase = 'guess';
     ctx.systemMsg(`${nickname(g.accusedId)}님이 라이어로 지목되었습니다! 라이어는 제시어를 맞히면 역전승합니다.`);
     setTimer(TIMES.guess, () => finishRound('liarCaught'));
+    clearBotTimers();
+    // 라이어가 봇이면 카테고리에서 무작위 추리 (운 좋으면 역전승!)
+    if (isBot(g.liarId)) {
+      scheduleBot(3000 + Math.random() * 2000, () => {
+        if (g.phase !== 'guess') return;
+        const list = g.category === CUSTOM_CATEGORY ? room.settings.customWords : WORDS[g.category];
+        const guess = list && list.length ? randOf(list) : '음...';
+        handleGuess(g.liarId, guess);
+      });
+    }
     ctx.broadcastRoom();
   }
 
   function pickJudge() {
     // 판정자는 이번 라운드 참가자 중에서만 선택 (관전자 방장에게 제시어가 새지 않게)
+    // 사람을 우선하고, 사람이 없으면 봇이 자동 판정한다
     if (room.hostId !== g.liarId && g.order.includes(room.hostId) && isActive(room.hostId)) {
       return room.hostId;
     }
-    return g.order.find((id) => id !== g.liarId && isActive(id)) || null;
+    return g.order.find((id) => id !== g.liarId && isActive(id) && !isBot(id))
+      || g.order.find((id) => id !== g.liarId && isActive(id))
+      || null;
+  }
+
+  // 판정자가 봇이면 자동 판정 (정규화 후 동일하거나 포함 관계면 정답 인정)
+  function maybeScheduleBotJudge() {
+    if (!isBot(g.judgeId)) return;
+    scheduleBot(2000 + Math.random() * 1500, () => {
+      if (g.phase !== 'judge') return;
+      const a = normalize(g.guessText);
+      const b = normalize(g.word);
+      const correct = a === b || (a.length > 1 && b.length > 1 && (a.includes(b) || b.includes(a)));
+      handleJudge(g.judgeId, correct);
+    });
   }
 
   function beginJudge() {
@@ -284,6 +383,8 @@ function createGame(room, ctx) {
     g.phase = 'judge';
     setTimer(TIMES.judge, () => finishRound('liarCaught'));
     sendJudgePrompt();
+    clearBotTimers();
+    maybeScheduleBotJudge();
     ctx.systemMsg(`라이어의 답이 정답과 정확히 일치하지 않습니다. ${nickname(g.judgeId)}님이 정답 여부를 판정합니다.`);
     ctx.broadcastRoom();
   }
@@ -296,6 +397,8 @@ function createGame(room, ctx) {
       return;
     }
     sendJudgePrompt();
+    clearBotTimers();
+    maybeScheduleBotJudge();
     ctx.systemMsg(`판정자가 자리를 비워 ${nickname(g.judgeId)}님이 대신 판정합니다.`);
     ctx.broadcastRoom();
   }
@@ -309,6 +412,7 @@ function createGame(room, ctx) {
   function finishRound(outcome) {
     clearTimer();
     clearLiarGrace();
+    clearBotTimers();
     const deltas = {};
     const liarWin = outcome === 'liarSurvived' || outcome === 'liarGuessed';
     if (liarWin) {
@@ -352,6 +456,7 @@ function createGame(room, ctx) {
   function voidRound(reason) {
     clearTimer();
     clearLiarGrace();
+    clearBotTimers();
     g.result = {
       outcome: 'voided',
       voided: true,
@@ -590,6 +695,7 @@ function createGame(room, ctx) {
     clearTimer();
     clearLiarGrace();
     clearLowPlayerGrace();
+    clearBotTimers();
   }
 
   return {

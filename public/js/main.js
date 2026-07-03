@@ -46,7 +46,7 @@ function avatarFor(id) {
   const s = String(id || '');
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
   return {
-    emoji: AVATAR_EMOJIS[h % AVATAR_EMOJIS.length],
+    emoji: s.startsWith('bot_') ? '🤖' : AVATAR_EMOJIS[h % AVATAR_EMOJIS.length],
     color: AVATAR_COLORS[(h >>> 4) % AVATAR_COLORS.length],
   };
 }

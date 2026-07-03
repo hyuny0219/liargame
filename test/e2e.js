@@ -275,6 +275,89 @@ async function main() {
     && customList.includes(picked.fakeWord) && picked.word !== picked.fakeWord,
     '커스텀 카테고리에서 제시어/가짜 제시어 선택');
 
+  // ---------- 3부: 봇 플레이어 (자동 투입 + 자동 플레이) ----------
+  console.log('\n[3부] 봇 플레이어 검증');
+
+  const h1 = { nickname: '사람1', socket: io(URL), playerId: null };
+  const h2 = { nickname: '사람2', socket: io(URL), playerId: null };
+  for (const h of [h1, h2]) {
+    const res = await emitP(h.socket, 'auth', { code: SITE_CODE, nickname: h.nickname });
+    h.playerId = res.playerId;
+  }
+  const botRoom = await emitP(h1.socket, 'room:create', {
+    name: '봇테스트', isPublic: false,
+    settings: { mode: 'basic', rounds: 1, describeTime: 30, discussTime: 30, categories: ['음식'] },
+  });
+  await emitP(h2.socket, 'room:join', { code: botRoom.room.code });
+
+  // 수동 봇 추가 → 강퇴로 제거
+  const addRes = await emitP(h1.socket, 'room:addBot', null);
+  assert(addRes.ok && addRes.botId, '방장이 봇 수동 추가');
+  const notHostAdd = await emitP(h2.socket, 'room:addBot', null);
+  assert(notHostAdd.ok === false, '방장이 아니면 봇 추가 불가');
+  const kickBot = await emitP(h1.socket, 'room:kick', { targetId: addRes.botId });
+  assert(kickBot.ok, '봇을 강퇴로 제거 가능');
+
+  // 사람 2명만으로 시작 → 봇 자동 투입으로 3명
+  let botState = null;
+  let botDescribed = false;
+  const botDone = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('봇 게임 타임아웃 (90초)')), 90000);
+    const human = { [h1.playerId]: h1, [h2.playerId]: h2 };
+    const acted = { h1v: false, h2v: false, skip: false, next: false, fin: false };
+    for (const h of [h1, h2]) {
+      h.socket.on('game:role', (role) => { h.role = role; });
+      h.socket.on('game:judgePrompt', async () => {
+        await emitP(h.socket, 'game:judge', { correct: false });
+      });
+      h.socket.on('chat', (m) => {
+        if (m.kind === 'describe' && String(m.playerId).startsWith('bot_')) botDescribed = true;
+      });
+      h.socket.on('room:state', async (state) => {
+        try {
+          botState = state;
+          const g = state.game;
+          if (!g) {
+            if (acted.fin) { clearTimeout(timeout); resolve(); }
+            return;
+          }
+          if (g.phase === 'describe' && g.order[g.turnIndex] === h.playerId && !h.saidIt) {
+            h.saidIt = true;
+            await emitP(h.socket, 'chat', { text: h.nickname + '의 설명' });
+          }
+          if (g.phase === 'discuss' && state.hostId === h.playerId && !acted.skip) {
+            acted.skip = true;
+            await emitP(h.socket, 'game:skipDiscuss', null);
+          }
+          if (g.phase === 'vote' && human[h.playerId] && !acted[h === h1 ? 'h1v' : 'h2v']) {
+            acted[h === h1 ? 'h1v' : 'h2v'] = true;
+            const botId = state.players.find((p) => p.isBot).id;
+            await emitP(h.socket, 'game:vote', { targetId: botId, voteRound: g.voteRound });
+          }
+          if (g.phase === 'result' && state.hostId === h.playerId && !acted.next) {
+            acted.next = true;
+            await emitP(h.socket, 'game:next', null);
+          }
+          if (g.phase === 'final' && state.hostId === h.playerId && !acted.fin) {
+            acted.fin = true;
+            await emitP(h.socket, 'game:next', null);
+          }
+        } catch (e) { clearTimeout(timeout); reject(e); }
+      });
+    }
+  });
+
+  const botStart = await emitP(h1.socket, 'game:start', null);
+  assert(botStart.ok, '사람 2명으로 게임 시작 (봇 자동 투입)');
+  await botDone;
+
+  assert(botState.players.length === 3 && botState.players.some((p) => p.isBot),
+    '봇이 자동 투입되어 3명으로 진행됨');
+  assert(botDescribed, '봇이 자기 차례에 자동으로 설명함');
+  console.log('  ✅ 봇 포함 한 라운드 완주 (설명→투표→결과→대기실)');
+
+  h1.socket.close();
+  h2.socket.close();
   bot4.socket.close();
   for (const bot of bots) bot.socket.close();
   server.kill();

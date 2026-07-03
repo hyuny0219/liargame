@@ -91,6 +91,35 @@ function roomChannel(code) {
   return `room:${code}`;
 }
 
+// ---------- 봇 플레이어 관리 ----------
+
+const BOT_NAMES = ['알파', '베타', '감마', '델타', '오메가', '시그마', '루나', '코코'];
+
+function addBot(room) {
+  if (room.players.size >= room.settings.maxPlayers) return null;
+  const used = new Set([...room.players.values()].map((p) => p.nickname));
+  const name = BOT_NAMES.find((n) => !used.has('🤖 ' + n));
+  if (!name) return null;
+  const bot = {
+    id: 'bot_' + crypto.randomBytes(6).toString('hex'),
+    nickname: '🤖 ' + name,
+    connected: true, // 봇은 항상 접속 상태
+    score: 0,
+    isBot: true,
+    disconnectTimer: null,
+  };
+  room.players.set(bot.id, bot);
+  return bot;
+}
+
+function hasConnectedHuman(room) {
+  return [...room.players.values()].some((p) => p.connected && !p.isBot);
+}
+
+function humansOnly(room) {
+  return [...room.players.values()].filter((p) => !p.isBot);
+}
+
 const CHAT_HISTORY_MAX = 100;
 
 // 채팅을 방 히스토리에 남기면서 브로드캐스트 (새로고침 시 복원용)
@@ -118,6 +147,7 @@ function roomPublicState(room) {
       nickname: p.nickname,
       connected: p.connected,
       score: p.score,
+      isBot: !!p.isBot,
     })),
     game: room.game ? room.game.publicState() : null,
   };
@@ -180,8 +210,8 @@ function gameCtx(room) {
 }
 
 function scheduleEmptyCheck(room) {
-  const anyConnected = [...room.players.values()].some((p) => p.connected);
-  if (anyConnected) {
+  // 봇만 남은 방은 유지할 이유가 없으므로 '사람' 기준으로 판단한다
+  if (hasConnectedHuman(room)) {
     if (room.emptyTimer) {
       clearTimeout(room.emptyTimer);
       room.emptyTimer = null;
@@ -192,7 +222,7 @@ function scheduleEmptyCheck(room) {
   room.emptyTimer = setTimeout(() => {
     room.emptyTimer = null;
     const r = roomsMod.getRoom(room.code);
-    if (r && ![...r.players.values()].some((p) => p.connected)) {
+    if (r && !hasConnectedHuman(r)) {
       for (const p of r.players.values()) {
         const sess = sessionsByPlayer.get(p.id);
         if (sess && sess.roomCode === r.code) sess.roomCode = null;
@@ -214,13 +244,13 @@ function scheduleWaitingRemoval(room, player) {
   }, WAITING_DISCONNECT_MS);
 }
 
-// 방장 위임 대상 선택: 게임 중이면 라운드 참가자 우선, 그다음 접속자 순
+// 방장 위임 대상 선택: 사람만, 게임 중이면 라운드 참가자 우선, 그다음 접속자 순
 function pickNextHost(room) {
-  const players = [...room.players.values()];
+  const humans = humansOnly(room);
   const order = room.game ? room.game.publicState().order : [];
-  return players.find((p) => p.connected && order.includes(p.id))
-    || players.find((p) => p.connected)
-    || players[0];
+  return humans.find((p) => p.connected && order.includes(p.id))
+    || humans.find((p) => p.connected)
+    || humans[0];
 }
 
 function removePlayer(room, playerId, opts) {
@@ -234,15 +264,18 @@ function removePlayer(room, playerId, opts) {
   const sess = sessionsByPlayer.get(playerId);
   if (sess && sess.roomCode === room.code) sess.roomCode = null;
 
-  if (room.players.size === 0) {
+  // 사람이 한 명도 없으면(빈 방 또는 봇만 남음) 방 삭제
+  if (room.players.size === 0 || humansOnly(room).length === 0) {
     destroyRoom(room);
     return;
   }
   if (!opts || !opts.silent) systemMsg(room, `${player.nickname}님이 나갔습니다.`);
   if (room.hostId === playerId) {
     const next = pickNextHost(room);
-    room.hostId = next.id;
-    systemMsg(room, `${next.nickname}님이 새 방장이 되었습니다.`);
+    if (next) {
+      room.hostId = next.id;
+      systemMsg(room, `${next.nickname}님이 새 방장이 되었습니다.`);
+    }
   }
   if (room.game) {
     room.game.handleLeave(playerId);
@@ -418,6 +451,20 @@ io.on('connection', (socket) => {
     cb({ ok: true });
   });
 
+  socket.on('room:addBot', (data, cb) => {
+    cb = cbOf(cb);
+    const { sess, room } = currentCtx();
+    if (!sess || !room) return cb({ ok: false, error: '방에 참여하고 있지 않습니다.' });
+    if (room.hostId !== sess.playerId) return cb({ ok: false, error: '방장만 봇을 추가할 수 있습니다.' });
+    if (room.state !== 'waiting') return cb({ ok: false, error: '게임 중에는 봇을 추가할 수 없습니다.' });
+    const bot = addBot(room);
+    if (!bot) return cb({ ok: false, error: '더 이상 봇을 추가할 수 없습니다. (정원 초과)' });
+    systemMsg(room, `${bot.nickname}이(가) 참가했습니다. 삐빕! 🤖`);
+    broadcastRoomState(room);
+    updateLobby();
+    cb({ ok: true, botId: bot.id });
+  });
+
   socket.on('room:kick', (data, cb) => {
     cb = cbOf(cb);
     const { sess, room } = currentCtx();
@@ -460,10 +507,23 @@ io.on('connection', (socket) => {
     if (!sess || !room) return cb({ ok: false, error: '방에 참여하고 있지 않습니다.' });
     if (room.hostId !== sess.playerId) return cb({ ok: false, error: '방장만 게임을 시작할 수 있습니다.' });
     if (room.state !== 'waiting') return cb({ ok: false, error: '이미 게임이 진행 중입니다.' });
-    const connected = [...room.players.values()].filter((p) => p.connected);
+    let connected = [...room.players.values()].filter((p) => p.connected);
+    // 3명 미만이면 부족한 만큼 봇을 자동 투입
+    if (connected.length < 3) {
+      const added = [];
+      while (connected.length + added.length < 3) {
+        const bot = addBot(room);
+        if (!bot) break;
+        added.push(bot);
+      }
+      if (added.length) {
+        systemMsg(room, `인원이 부족해 봇 ${added.length}명이 참가합니다! (${added.map((b) => b.nickname).join(', ')}) 🤖`);
+      }
+      connected = [...room.players.values()].filter((p) => p.connected);
+    }
     if (connected.length < 3) return cb({ ok: false, error: '게임을 시작하려면 최소 3명이 필요합니다.' });
     if (room.settings.mode === 'spy' && connected.length < 5) {
-      return cb({ ok: false, error: '스파이 모드는 5명 이상부터 시작할 수 있습니다.' });
+      return cb({ ok: false, error: '스파이 모드는 5명 이상부터 시작할 수 있습니다. (봇 추가로 채울 수 있어요)' });
     }
     for (const p of room.players.values()) p.score = 0;
     room.state = 'playing';

@@ -102,6 +102,8 @@ function renderWaiting(area) {
   if (isHost) {
     html += `
       <button id="start-btn" class="btn3d block" style="font-size:19px;padding:16px">🚀 게임 시작! (${connectedCount}명 접속 중)</button>
+      <button id="add-bot-btn" class="btn3d small blue block" style="margin-top:10px">🤖 봇 추가</button>
+      <div class="note-msg" style="color:#EDE9FF;text-shadow:0 2px 0 rgba(43,35,80,.5)">3명 미만이면 시작할 때 봇이 자동으로 채워져요! 봇 제거는 점수판(👥)의 ✕</div>
       <div class="card panel" style="margin-top:14px;padding:14px 18px">
         <details class="advanced" style="border:none;padding:0;margin:0">
           <summary>⚙️ 게임 설정 변경</summary>
@@ -129,6 +131,11 @@ function renderWaiting(area) {
     $('#start-btn').addEventListener('click', () => {
       App.socket.emit('game:start', null, (res) => {
         if (res && !res.ok) showToast(res.error || '시작할 수 없습니다.');
+      });
+    });
+    $('#add-bot-btn').addEventListener('click', () => {
+      App.socket.emit('room:addBot', null, (res) => {
+        if (res && !res.ok && res.error) showToast(res.error);
       });
     });
     const editor = $('#settings-editor');
