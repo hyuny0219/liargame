@@ -95,7 +95,7 @@ function createGame(room, ctx) {
     const cur = g.order[g.turnIndex];
     if (!isBot(cur)) return;
     scheduleBot(2000 + Math.random() * 2500, () => {
-      if (g.phase === 'describe' && g.order[g.turnIndex] === cur) {
+      if (g.phase === 'describe' && g.order[g.turnIndex] === cur && room.players.has(cur)) {
         handleChat(cur, botDescribeLine(cur));
       }
     });
@@ -106,7 +106,8 @@ function createGame(room, ctx) {
     for (const id of g.order) {
       if (!isBot(id) || !room.players.has(id)) continue;
       scheduleBot(1500 + Math.random() * 4000, () => {
-        if (g.phase !== 'vote') return;
+        // 그 사이 강퇴된 봇은 행동하지 않는다
+        if (g.phase !== 'vote' || !room.players.has(id)) return;
         const pool = (g.tieCandidates || g.order)
           .filter((t) => t !== id && room.players.has(t));
         if (pool.length) handleVote(id, randOf(pool), g.voteRound);
@@ -276,7 +277,7 @@ function createGame(room, ctx) {
     for (const id of g.order) {
       if (isBot(id) && Math.random() < 0.7) {
         scheduleBot(1500 + Math.random() * room.settings.discussTime * 600, () => {
-          if (g.phase === 'discuss') handleChat(id, randOf(DISCUSS_LINES));
+          if (g.phase === 'discuss' && room.players.has(id)) handleChat(id, randOf(DISCUSS_LINES));
         });
       }
     }
@@ -362,14 +363,18 @@ function createGame(room, ctx) {
       || null;
   }
 
-  // 판정자가 봇이면 자동 판정 (정규화 후 동일하거나 포함 관계면 정답 인정)
+  // 판정자가 봇이면 자동 판정: 정규화 후 동일하거나 포함 관계면 정답 인정.
+  // 단, 답이 같은 카테고리의 '다른 단어'면 오답 처리 (예: 정답 '고래'에 '돌고래')
   function maybeScheduleBotJudge() {
     if (!isBot(g.judgeId)) return;
     scheduleBot(2000 + Math.random() * 1500, () => {
       if (g.phase !== 'judge') return;
       const a = normalize(g.guessText);
       const b = normalize(g.word);
-      const correct = a === b || (a.length > 1 && b.length > 1 && (a.includes(b) || b.includes(a)));
+      const list = g.category === CUSTOM_CATEGORY ? room.settings.customWords : WORDS[g.category] || [];
+      const isOtherWord = list.some((w) => normalize(w) === a && normalize(w) !== b);
+      const correct = a === b
+        || (!isOtherWord && a.length > 1 && b.length > 1 && (a.includes(b) || b.includes(a)));
       handleJudge(g.judgeId, correct);
     });
   }
@@ -507,6 +512,7 @@ function createGame(room, ctx) {
 
   function handleVote(playerId, targetId, voteRound) {
     if (g.phase !== 'vote') return { ok: false, error: '지금은 투표 시간이 아닙니다.' };
+    if (!room.players.has(playerId)) return { ok: false, error: '방에 없는 플레이어는 투표할 수 없습니다.' };
     if (Number(voteRound) !== g.voteRound) {
       return { ok: false, error: '투표가 갱신되었습니다. 다시 투표해주세요.' };
     }

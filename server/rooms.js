@@ -109,12 +109,12 @@ function publicRoomList() {
   return list.sort((a, b) => b.players - a.players);
 }
 
-// 오래 방치된 방 정리 (2시간)
+// 오래 방치된 방 정리 (2시간) — 봇은 항상 접속 상태이므로 '사람' 기준으로 판단
 setInterval(() => {
   const now = Date.now();
   for (const room of rooms.values()) {
-    const anyConnected = [...room.players.values()].some((p) => p.connected);
-    if (!anyConnected && now - room.createdAt > 2 * 60 * 60 * 1000) deleteRoom(room.code);
+    const humanConnected = [...room.players.values()].some((p) => p.connected && !p.isBot);
+    if (!humanConnected && now - room.createdAt > 2 * 60 * 60 * 1000) deleteRoom(room.code);
   }
 }, 10 * 60 * 1000).unref();
 

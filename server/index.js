@@ -458,7 +458,12 @@ io.on('connection', (socket) => {
     if (room.hostId !== sess.playerId) return cb({ ok: false, error: '방장만 봇을 추가할 수 있습니다.' });
     if (room.state !== 'waiting') return cb({ ok: false, error: '게임 중에는 봇을 추가할 수 없습니다.' });
     const bot = addBot(room);
-    if (!bot) return cb({ ok: false, error: '더 이상 봇을 추가할 수 없습니다. (정원 초과)' });
+    if (!bot) {
+      const reason = room.players.size >= room.settings.maxPlayers
+        ? '정원이 가득 차 봇을 추가할 수 없습니다.'
+        : '추가할 수 있는 봇을 모두 사용했습니다.';
+      return cb({ ok: false, error: reason });
+    }
     systemMsg(room, `${bot.nickname}이(가) 참가했습니다. 삐빕! 🤖`);
     broadcastRoomState(room);
     updateLobby();
@@ -474,8 +479,11 @@ io.on('connection', (socket) => {
     if (targetId === sess.playerId) return cb({ ok: false, error: '자기 자신은 강퇴할 수 없습니다.' });
     const target = room.players.get(targetId);
     if (!target) return cb({ ok: false, error: '대상을 찾을 수 없습니다.' });
-    room.banned.add(targetId);
-    room.bannedNames.add(target.nickname);
+    // 봇은 스스로 재입장하지 않으므로 차단 목록에 남기지 않는다 (이름 재사용 보장)
+    if (!target.isBot) {
+      room.banned.add(targetId);
+      room.bannedNames.add(target.nickname);
+    }
     const targetSocket = playerSockets.get(targetId);
     if (targetSocket) {
       room.bannedIps.add(clientIp(targetSocket));
@@ -508,22 +516,27 @@ io.on('connection', (socket) => {
     if (room.hostId !== sess.playerId) return cb({ ok: false, error: '방장만 게임을 시작할 수 있습니다.' });
     if (room.state !== 'waiting') return cb({ ok: false, error: '이미 게임이 진행 중입니다.' });
     let connected = [...room.players.values()].filter((p) => p.connected);
-    // 3명 미만이면 부족한 만큼 봇을 자동 투입
+    // 3명 미만이면 부족한 만큼 봇을 자동 투입 (검증 실패 시 되돌린다)
+    const added = [];
     if (connected.length < 3) {
-      const added = [];
       while (connected.length + added.length < 3) {
         const bot = addBot(room);
         if (!bot) break;
         added.push(bot);
       }
-      if (added.length) {
-        systemMsg(room, `인원이 부족해 봇 ${added.length}명이 참가합니다! (${added.map((b) => b.nickname).join(', ')}) 🤖`);
-      }
       connected = [...room.players.values()].filter((p) => p.connected);
     }
-    if (connected.length < 3) return cb({ ok: false, error: '게임을 시작하려면 최소 3명이 필요합니다.' });
+    const rollbackBots = () => { for (const b of added) room.players.delete(b.id); };
+    if (connected.length < 3) {
+      rollbackBots();
+      return cb({ ok: false, error: '게임을 시작하려면 최소 3명이 필요합니다.' });
+    }
     if (room.settings.mode === 'spy' && connected.length < 5) {
+      rollbackBots();
       return cb({ ok: false, error: '스파이 모드는 5명 이상부터 시작할 수 있습니다. (봇 추가로 채울 수 있어요)' });
+    }
+    if (added.length) {
+      systemMsg(room, `인원이 부족해 봇 ${added.length}명이 참가합니다! (${added.map((b) => b.nickname).join(', ')}) 🤖`);
     }
     for (const p of room.players.values()) p.score = 0;
     room.state = 'playing';
