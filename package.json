@@ -1,0 +1,21 @@
+{
+  "name": "liargame",
+  "version": "1.0.0",
+  "description": "웹 기반 실시간 라이어게임 (Node.js + Socket.IO)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node test/e2e.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.5"
+  }
+}

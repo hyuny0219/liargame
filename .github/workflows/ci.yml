@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: 의존성 설치
+        run: npm ci
+      - name: 문법 검사
+        run: |
+          for f in server/*.js public/js/*.js test/*.js; do
+            node --check "$f"
+          done
+      - name: E2E 테스트 (봇 3명 한 라운드 플레이)
+        run: npm test
